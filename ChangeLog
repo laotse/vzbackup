@@ -1,3 +1,14 @@
+2009-07-28  Lars Hanke <lars@lhanke.de>
+
+	* vzdump: added options --sane and --no-archive. 
+	--sane enforces at least a --suspend of the VM even if --snapshot 
+	has been selected. The internal state of the suspended machine is 
+	save to /etc/vzdump of the dump. No changes in --stop mode, since 
+	this is always sane. If --compress is selected, the VM state is 
+	compressed.
+	--no-archive puts the resulting dump into a directory of plain files
+	into --dumpdir/$VEID instead of creating a tar archive.
+	
 2009-05-29  Proxmox Support Team  <support@proxmox.com>
 
 	* vzdump (get_lvm_device): also return filesystem type

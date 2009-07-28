@@ -50,6 +50,8 @@ my $opt_lockwait;
 my $opt_stopwait;
 my $opt_snapsize;
 my $opt_stdexcludes;
+my $opt_noarch = 0;
+my $opt_sane = 0;
 
 my $stopmode = '';
 
@@ -62,6 +64,8 @@ my $lvremove = 'lvremove';
 my $sendmail = 'sendmail';
 my $pveca = 'pveca';
 my $cpcmd = 'cp';
+my $ducmd = 'du';
+my $gzip = 'gzip';
 
 my $vzdir = '/etc/vz';
 my $qmdir = '/etc/qemu-server';
@@ -404,6 +408,7 @@ sub print_usage {
     print STDERR "\t--exclude-path REGEX\texclude certain files/directories\n";     print STDERR "\t--stdexcludes\t\texclude temorary files and logs\n\n";
  
     print STDERR "\t--compress\t\tcompress dump file (gzip)\n";
+    print STDERR "\t--no-archive\t\tjust copy files, do not create an archive\n";
     print STDERR "\t--dumpdir DIR\t\tstore resulting files in DIR\n";
     print STDERR "\t--tmpdir DIR\t\tstore temporary files in DIR\n\n";
 
@@ -412,6 +417,7 @@ sub print_usage {
     print STDERR "\t--stop\t\t\tstop/start VPS if running\n";
     print STDERR "\t--suspend\t\tsuspend/resume VPS when running\n";
     print STDERR "\t--snapshot\t\tuse LVM snapshot when running\n";
+    print STDERR "\t--sane\t\tuses checkpointing with snapshot to store the full state of the machine. It includes the checkpointing dump file.\n";
     print STDERR "\t--size MB\t\tLVM snapshot size\n\n";
 
     print STDERR "\t--node CID\t\tonly run on pve cluster node CID\n";
@@ -556,7 +562,11 @@ sub lvm_cleanup {
 sub archive_vm {
     my ($vmlist, $vpsid, $dir, $tarfile, $logfd) = @_;
 
-    debugmsg ('info', "creating archive '$tarfile' ($dir)", $logfd);
+    if ($opt_noarch) {
+	debugmsg ('info', "synchronize to $dir", $logfd);
+    } else {
+	debugmsg ('info', "creating archive '$tarfile' ($dir)", $logfd);
+    }
 
     my $zflag = $opt_compress ? 'z' : '';
 
@@ -566,7 +576,7 @@ sub archive_vm {
     my $bwl = $opt_bwlimit*1024; # bandwidth limit for cstream
 
     if ($vmtype eq 'openvz') { 
-	mkpath "$dir/etc/vzdump/";
+	mkpath "$dir/etc/vzdump";
 	run_command ($logfd, "$cpcmd $srcconf $dir/etc/vzdump/vps.conf");
 	my $cfgdir = dirname ($srcconf);
 	foreach my $s (@script_ext) {
@@ -574,6 +584,19 @@ sub archive_vm {
 	    if (-f $fn) {
 		run_command ($logfd, "$cpcmd $fn $dir/etc/vzdump/vps.$s");
 	    }
+	}
+	if ($opt_sane) {
+	    my $arcfile="$dir/etc/vzdump/vps.dump";
+	    if($stopmode eq 'snapshot') {
+		# the dump file is stored in /tmp move to final
+		run_command ($logfd, "$cpcmd /tmp/vzdump-$vpsid.$$ $arcfile");
+		unlink "/tmp/vzdump-$vpsid.$$";
+	    }
+	    if ($opt_compress && $opt_noarch) {
+		# if it is archived then compress will act on the archive
+		run_command ($logfd, "$gzip -9 $arcfile");
+	    }
+	    
 	}
 	
 	if ($opt_stdexcludes) {
@@ -586,11 +609,24 @@ sub archive_vm {
 	# backup all types except sockets
 	my $findargs = join (' ', @findexcl) . ' -print0';
 
-	my $cmd = "(cd $dir; find . $findargs|tar c${zflag}pf - --totals --sparse --numeric-owner --no-recursion --ignore-failed-read --null -T -|cstream -t $bwl >$tarfile)";
-	    
-	run_command ($logfd, $cmd);
+	my $cmd="";
+	if ($opt_noarch == 0){
+	    # create a tar archive
+	    $cmd = "(cd $dir; find . $findargs|tar c${zflag}pf - --totals --sparse --numeric-owner --no-recursion --ignore-failed-read --null -T -|cstream -t $bwl >$tarfile)";
+	} elsif ($stopmode eq "snapshot") {
+	    # in this case $tarfile contains the destination directory
+	    my $rsyncopts = "--stats --numeric-ids --bwlimit=${opt_bwlimit}";
+	    $cmd = "(cd $dir; find . $findargs | $rsync $rsyncopts -aH --delete --no-whole-file --inplace --files-from - $tarfile)";
+	} else {
+	    # we did an rsync snapshot to the destination already
+	}	    
 
-	rmtree "$dir/etc/vzdump";
+	if($cmd ne ""){
+	    run_command ($logfd, $cmd);
+	} else {
+	    debugmsg ('info', "snapshot in place -- done!", $logfd);
+	}
+
     } else {
 	run_command ($logfd, "$cpcmd $srcconf $dir/qemu-server.conf");
 	my @filea = ('qemu-server.conf'); # always first file in tar
@@ -666,9 +702,31 @@ sub snapshot_vm {
 		lvm_cleanup ($logfd, $snapdev);
 	    }
 
+	    if ($opt_sane) {
+		# we definitely suspend, but as short as possible
+		debugmsg ('info', "suspend vps", $logfd);
+		if ($vmtype eq 'openvz') {
+		    run_command ($logfd, "$vzctl chkpnt $vpsid --suspend");
+		    my $dumpfile="/tmp/vzdump-$vpsid.$$";
+		    debugmsg ('info', "dump state of vps to $dumpfile", $logfd);
+		    run_command ($logfd, "$vzctl chkpnt $vpsid --dump --dumpfile $dumpfile");
+		} else {
+		    run_command ($logfd, "qm suspend $vpsid");
+		}
+	    }
+		
 	    debugmsg ('info', "creating lvm snapshot of $srcdev ('$snapdev')", $logfd);
 	    run_command ($logfd, "$lvcreate --size ${opt_snapsize}M --snapshot" .
 			 " --name vzsnap /dev/$lvmvg/$lvmlv");
+
+	    if ($opt_sane){
+		debugmsg ('info', "resume vps", $logfd);
+		if ($vmtype eq 'openvz') {
+		    run_command ($logfd, "$vzctl chkpnt $vpsid --resume");
+		} else {
+		    run_command ($logfd, "qm resume $vpsid");
+		}
+	    }
 
 	    debugmsg ('info', "mounting lvm snapshot", $logfd);
 
@@ -688,8 +746,13 @@ sub snapshot_vm {
 	}
     }
     
-    rmtree $tmpdir;
-    mkdir $tmpdir || die "unable to create temporary directory '$tmpdir'";
+    if(! $opt_noarch ){
+	rmtree $tmpdir;
+	mkdir $tmpdir || die "unable to create temporary directory '$tmpdir'";
+    } else {
+	# tmpdir is the final snapshot, not temporary
+	mkdir $tmpdir || die "unable to create snapshot directory '$tmpdir'";
+    }
 
     my $rsyncopts = "--stats --numeric-ids --bwlimit=${opt_bwlimit}";
 
@@ -739,6 +802,13 @@ sub snapshot_vm {
 	    run_command ($logfd, "qm start $vpsid");
 	}
     } elsif ($stopmode eq 'suspend') {
+	if ($opt_sane) {
+	    my $etcdump="$tmpdir/$vpsid/etc/vzdump";
+	    mkpath $etcdump;
+	    my $dumpfile="$etcdump/vps.dump";
+	    debugmsg ('info', "dump state of vps to $dumpfile", $logfd);
+	    run_command ($logfd, "$vzctl chkpnt $vpsid --dump --dumpfile $dumpfile");
+	}
 	debugmsg ('info', "resume vps", $logfd);
 	if ($vmtype eq 'openvz') {
 	    run_command ($logfd, "$vzctl chkpnt $vpsid --resume");
@@ -770,19 +840,29 @@ sub vm_backup {
     $tmptar =~ s/\.[^\.]+$/\.dat/;
 
     eval {
-	($snapdir, $snapdev) = snapshot_vm ($vmlist, $vpsid, $dumpdir, $tmpdir, $logfd);
+	my $tmd = $tmpdir;
+	$tmd = $dumpdir if ($opt_noarch && ($stopmode ne 'snapshot'));
+	($snapdir, $snapdev) = snapshot_vm ($vmlist, $vpsid, $dumpdir, $tmd, $logfd);
 
-	unlink $tmptar;
+	if ($opt_noarch) {
+	    archive_vm ($vmlist, $vpsid, $snapdir, $dumpdir, $logfd);
+	    $size = run_command($logfd,"$ducmd --max-depth 0 $dumpdir");
+	    $size =~ s/\s.*$//g;
+	    my $cs = format_size ($size); 
+	    debugmsg ('info', "directory size $cs", $logfd);
+	} else {
+	    unlink $tmptar;
 
-	archive_vm ($vmlist, $vpsid, $snapdir, $tmptar, $logfd);
+	    archive_vm ($vmlist, $vpsid, $snapdir, $tmptar, $logfd);
 
-	$size = -s $tmptar;
+	    $size = -s $tmptar;
 	
-	my $cs = format_size ($size); 
-	debugmsg ('info', "file size $cs", $logfd);
+	    my $cs = format_size ($size); 
+	    debugmsg ('info', "file size $cs", $logfd);
 
-	rename ($tmptar, $tarfile) ||
-	    die "unable to rename '$tmptar' to '$tarfile'\n";
+	    rename ($tmptar, $tarfile) ||
+		die "unable to rename '$tmptar' to '$tarfile'\n";
+	}
     };
 
     my $err = $@;
@@ -793,7 +873,7 @@ sub vm_backup {
     rmtree $tmpdir;
     rmdir "/mnt/vzsnap" if $opt_snap;
 
-    unlink $tmptar;
+    unlink $tmptar unless ( $opt_noarch );
 
     die $err if $err; # propagate error
 
@@ -1094,6 +1174,8 @@ if (!GetOptions ('all' => \$opt_all,
 		 'stop' =>\$opt_stop,
 		 'suspend' =>\$opt_suspend,
 		 'snapshot' =>\$opt_snap,
+		 'sane' => \$opt_sane,
+		 'no-archive' => \$opt_noarch,
 		 'size=i' => \$opt_snapsize,
 		 'node=i' => \$opt_node,
 		 'bwlimit=i' => \$opt_bwlimit,
@@ -1177,6 +1259,14 @@ if ($opt_snap) {
     check_bin (\$lvremove, "lvm2 not installed?");
 }
 
+if ($opt_compress) {
+    check_bin (\$gzip, "gzip not installed?");
+}
+
+if ($opt_noarch) {
+    check_bin (\$ducmd, "du not installed?");
+}
+
 # parameters are OK - no start real work and log everything
 
 if ($opt_restore) {
@@ -1234,6 +1324,10 @@ eval {
     $stopmode = 'stop' if $opt_stop;
     $stopmode = 'suspend' if $opt_suspend;
     $stopmode = 'snapshot' if $opt_snap;
+
+    # stop is sane by definition!
+    $opt_sane = 0 if ($stopmode eq 'stop');
+
 
     my $dumpdir;
 
@@ -1377,6 +1471,9 @@ vzdump OPTIONS [--all | <VMID>]
 
 --compress              compress dump file (gzip)
 
+--no-archive            do not create a tar archive in --dumpdir, but
+                        rsync the directory tree to --dumpdir instead.
+
 --dumpdir DIR           store resulting files in DIR
 
 --tmpdir DIR            store temporary files in DIR. --suspend and --stop
@@ -1391,6 +1488,11 @@ vzdump OPTIONS [--all | <VMID>]
 --suspend               suspend/resume VPS when running
 
 --snapshot              use LVM snapshot when running
+
+--sane                  ensure all information is sane for restart of the
+                        VPS. Currently this is done by a stop/start
+                        sequence, which can be shorter than --stop, e.g.
+                        using an LVM snapshot.
 
 --size MB               LVM snapshot size (default 1024)
     
