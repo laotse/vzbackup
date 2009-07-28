@@ -52,6 +52,7 @@ my $opt_snapsize;
 my $opt_stdexcludes;
 my $opt_noarch = 0;
 my $opt_sane = 0;
+my $opt_filesys = 0;
 
 my $stopmode = '';
 
@@ -406,7 +407,7 @@ sub print_usage {
     print STDERR "usage: $0 OPTIONS [--all | VPSID]\n\n";
     print STDERR "\t--exclude VPSID\t\texclude VPSID (assumes --all)\n";
     print STDERR "\t--exclude-path REGEX\texclude certain files/directories\n";     print STDERR "\t--stdexcludes\t\texclude temorary files and logs\n\n";
- 
+    print STDERR "\t--one-filesystem\tdo not recurse directories across file system\n\t\t\t\tborders\n\n";
     print STDERR "\t--compress\t\tcompress dump file (gzip)\n";
     print STDERR "\t--no-archive\t\tjust copy files, do not create an archive\n";
     print STDERR "\t--dumpdir DIR\t\tstore resulting files in DIR\n";
@@ -417,7 +418,7 @@ sub print_usage {
     print STDERR "\t--stop\t\t\tstop/start VPS if running\n";
     print STDERR "\t--suspend\t\tsuspend/resume VPS when running\n";
     print STDERR "\t--snapshot\t\tuse LVM snapshot when running\n";
-    print STDERR "\t--sane\t\tuses checkpointing with snapshot to store the full state of the machine. It includes the checkpointing dump file.\n";
+    print STDERR "\t--sane\t\t\tuses checkpointing with snapshot to store the\n\t\t\t\tfull state of the machine. It includes the\n\t\t\t\tcheckpointing dump file.\n";
     print STDERR "\t--size MB\t\tLVM snapshot size\n\n";
 
     print STDERR "\t--node CID\t\tonly run on pve cluster node CID\n";
@@ -608,6 +609,9 @@ sub archive_vm {
 
 	# backup all types except sockets
 	my $findargs = join (' ', @findexcl) . ' -print0';
+	if( $opt_filesys ){
+	    $findargs = "-xdev " . $findargs;
+	}
 
 	my $cmd="";
 	if ($opt_noarch == 0){
@@ -755,6 +759,9 @@ sub snapshot_vm {
     }
 
     my $rsyncopts = "--stats --numeric-ids --bwlimit=${opt_bwlimit}";
+    if( $opt_filesys ){
+	$rsyncopts .= " -x";
+    }
 
     my $synccmd = "$rsync $rsyncopts -aH --delete --no-whole-file --inplace $dir $tmpdir";
     debugmsg ('info', "starting first sync $dir to $tmpdir", $logfd);
@@ -1176,6 +1183,7 @@ if (!GetOptions ('all' => \$opt_all,
 		 'snapshot' =>\$opt_snap,
 		 'sane' => \$opt_sane,
 		 'no-archive' => \$opt_noarch,
+		 'one-filesystem' => \$opt_filesys,
 		 'size=i' => \$opt_snapsize,
 		 'node=i' => \$opt_node,
 		 'bwlimit=i' => \$opt_bwlimit,
@@ -1468,6 +1476,9 @@ vzdump OPTIONS [--all | <VMID>]
                         multiple exclude paths
 
 --stdexcludes           exclude temorary files and logs
+
+--one-filesystem        do not recurse directories across file system
+                        borders
 
 --compress              compress dump file (gzip)
 
