@@ -1,0 +1,38 @@
+Name: vzdump
+Vendor: Proxmox
+Packager: Proxmox Server Solutions GmbH <http://www.proxmox.com/>
+Version: @@VERSION@@
+Release: @@PKGRELEASE@@
+BuildArch: noarch
+BuildPreReq: perl
+Requires: perl, vzctl, cstream, rsync, MTA
+Summary: OpenVZ backup scripts
+BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
+Source: %{name}-%{version}.tar.gz
+License: GPL
+Group: Utilities
+
+%description
+This package contains the vzdump skript to backup and restore openvz images.
+
+%prep
+%setup
+
+%install
+rm -rf $RPM_BUILD_ROOT
+make DESTDIR=$RPM_BUILD_ROOT install
+
+%clean
+rm -rf $RPM_BUILD_ROOT
+
+%files
+%defattr(-,root,root)
+%attr(755,root,root) %_sbindir/vzdump
+%attr(644,root,root) %_mandir/man1/vzdump.1.*
+%doc ChangeLog changelog.Debian copyright
+
+%changelog
+* Tue Mar 22 2007 Dietmar Maurer <dietmar@proxmox.com> 0.3-1
+- added Vendor and Packager tags
+* Tue Mar 20 2007 Kir Kolyshkin <kir@openvz.org> 0.3-1
+- created spec file

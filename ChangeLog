@@ -1,0 +1,109 @@
+2009-05-29  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (get_lvm_device): also return filesystem type
+	(snapshot_vm): always mount with '-t $fstype', pass "-o nouuid"
+	for xfs filesystems.
+	(get_lvm_mapping): use ':' as separator 
+
+2008-09-17  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (snapshot_vm): use --no-whole-file --inplace for rsync (works
+	better for large files), also use --stats --numeric-id and
+	apply bandwidth limits with --bwlimit 
+	(archive_vm): use --sparse option for tar
+
+	* vzdump: support to backup/restore qemu-server images
+
+	* vzdump: new --stdexcludes option (we no longer exclude files by
+	default, because most usres expect to have a full backup including
+	all files and logs)
+
+	* vzdump: add --tmpdir option as suggested by Ugo Bellavance
+	
+	* vzdump: add --wait option, using locbal lock file to
+	make sure only one instance is running
+	
+	* vzdump: set default snapshot size to 1GB, new --size option to
+	specify snapshot size
+
+	* copyright: fixed fsf address
+
+	* Makefile (SBINDIR): set to /usr/sbin (command is only useful for 
+	user root)
+
+	* vzdump.spec, control.in: we now depend on rsync, cstream and MTA
+
+2008-09-16  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (read_vzdump_defaults): added global configuration file.
+
+2008-08-18  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump: added --node option (proxmox ve cluster support),
+	use --rsyncable for compressed files
+	removed --xdelta option 
+
+2007-06-28  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump: use values of vz.conf if no private/root dir specified
+	in XXX.conf
+
+2007-05-25  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (run_command): better parser
+	(read_global_config): improved parser
+	(send_mail): allow multiple receivers (multiple --mailto options)
+	(send_mail): add additional status infos
+
+2007-05-24  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (send_mail): generate nicer mails
+
+2007-05-21  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump: new --exclude-path option, use 'find' to avoid tar
+	sockets warnings, try to skip all log files by default, use tar
+	option --ignore-failed-read
+
+2007-05-10  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump: additionally log time, new --exclude option (suggested
+	by Ugo Bellavance)
+
+2007-04-04  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (get_device): use -P with df (fixes bug reported by
+	Jernej Proenta)
+
+2007-03-26  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (read_global_config): read config of VEs >= 1000
+	- issue warning when doing backup without suspend/snapshot
+
+2007-03-22  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump.spec.in: new file from Kir Kolyshkin
+	
+	* Makefile: merged in patch from Kir Kolyshkin
+	- use rpmbuild instead of alien
+	- removed install-deb and install-rpm target
+	- added standard install target
+	- renamed source package to vzdump-${VERSION}.tar.gz
+
+2007-03-21  Proxmox Support Team  <support@proxmox.com>
+
+	* vzdump (read_global_config): remove
+	/vz/private/$VEID/etc/vpsdump after backup (bug reported by
+	Thorsten Schifferdecker)
+	(check_bin): find correct path (bug reported by
+	Thorsten Schifferdecker)
+	(debugmsg): support IDs > 999
+
+2007-03-20  Proxmox Support Team  <support@proxmox.com>
+
+	* Makefile: fix TGZ package 
+
+2007-03-07  Proxmox Support Team  <support@proxmox.com>
+
+	* Makefile: first try 
+

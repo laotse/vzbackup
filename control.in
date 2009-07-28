@@ -1,0 +1,9 @@
+Package: vzdump
+Version: @@VERSION@@-@@PKGRELEASE@@
+Section: admin
+Priority: optional
+Architecture: all
+Depends: perl (>= 5.6.0-16), vzctl, cstream, rsync, exim4 | mail-transport-agent
+Maintainer: Proxmox Support Team <support@proxmox.com>
+Description: OpenVZ backup scripts
+ This package contains the vzdump skript to backup and restore openvz images.

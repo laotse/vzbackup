@@ -1,0 +1,47 @@
+vzdump (1.0-2) unstable; urgency=low
+
+  * bug fix in config parser
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 28 Jun 2007 11:38:06 +0200
+
+vzdump (1.0-1) stable; urgency=low
+
+  * set version number to 1.0, because we are quite stable
+  
+  * added copyright notice to man page
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 10 May 2007 09:50:01 +0200
+
+vzdump (0.4-1) unstable; urgency=low
+
+  * also read config of VEs with ID > 999
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 26 Mar 2007 09:05:28 +0200
+
+vzdump (0.3-1) unstable; urgency=low
+
+  * merged in patch from Kir Kolyshkin (rpm related changes)
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 22 Mar 2007 08:35:55 +0100
+
+vzdump (0.2-2) unstable; urgency=low
+
+  * changed package dependency (perl > 5.6.0-16, vzdump)
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 21 Mar 2007 10:42:10 +0100
+
+vzdump (0.2-1) stable; urgency=low
+
+  * dm2 snapshot support 
+  
+  * many bug fixes
+  
+  * new manual page
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 19 Mar 2007 11:10:25 +0100
+
+vzdump (0.1-1) stable; urgency=low
+
+  * first release
+  
+ -- Proxmox Support Team <support@proxmox.com>  Wed,  7 Mar 2007 16:20:48 +0100

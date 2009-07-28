@@ -1,0 +1,13 @@
+
+restore to configurable directory
+--- mail from Jim Archer
+> Hi All...
+> 
+> Is it possible to use vzdump --restore in such a way that the 
+> files are placed back in a particular location?  I tried 
+> --dumpdir but that made no difference.  VZDump keeps putting 
+> the files into a location different than where they came from.
+> 
+> I realize I could restore and then move the files, but I am 
+> trying to automate this.
+
