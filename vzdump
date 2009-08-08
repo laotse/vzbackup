@@ -22,6 +22,7 @@
 #
 
 use strict;
+use warnings;
 use Getopt::Long;
 use Fcntl ':flock';
 use Sys::Syslog;
@@ -67,6 +68,7 @@ my $pveca = 'pveca';
 my $cpcmd = 'cp';
 my $ducmd = 'du';
 my $gzip = 'gzip';
+my $cstream = 'cstream';
 
 my $vzdir = '/etc/vz';
 my $qmdir = '/etc/qemu-server';
@@ -129,8 +131,8 @@ sub run_command {
     # catch exec errors
     if ($orig_pid != $$) {
 	debugmsg ('err', "command '$cmdstr' failed - fork failed", $logfd);
-	POSIX::_exit (1); 
-	kill ('KILL', $$); 
+	POSIX::_exit (1);
+	kill ('KILL', $$);
     }
 
     die $err if $err;
@@ -207,7 +209,7 @@ sub format_size {
     } else {
 	my $gb = $mb / 1024;
 	return sprintf ("%.2fGB", $gb);
-    } 
+    }
 }
 
 sub format_time {
@@ -244,7 +246,7 @@ sub read_vzdump_defaults {
 
     my $fh = IO::File->new ("<$fn");
     return $res if !$fh;
-    
+
     my $line;
     while (defined ($line = <$fh>)) {
 	next if $line =~ m/^\s*$/;
@@ -275,7 +277,7 @@ sub read_vzdump_defaults {
 
 # read global vz.conf
 sub read_glogal_vz_config {
- 
+
     local $/;
 
     my $res = {
@@ -283,7 +285,7 @@ sub read_glogal_vz_config {
 	privatedir => '/vz/private',
 	dumpdir => '/vz/dump',
     };
-    
+
     my $filename = "$vzdir/vz.conf";
 
     return $res if ! -f $filename;
@@ -397,7 +399,7 @@ sub find_add_exclude {
 
 find_add_exclude ('-type', 's'); # skip sockets
 
-# argument parsing 
+# argument parsing
 
 sub print_usage {
     my $msg = shift;
@@ -458,19 +460,19 @@ sub check_vpsid {
 
     if ($vpsid !~ m/^\d\d\d+$/) {
 	print_usage ("strange VPS ID '${vpsid}'");
-	exit (-1); 
+	exit (-1);
     }
 }
 
 sub getlock {
     my ($maxwait) = @_;
- 
+
     if (!open (SERVER_FLCK, ">>$lockfile")) {
 	debugmsg ('err', "can't open lock on file '$lockfile' - $!", undef, 1);
 	exit (-1);
     }
 
-    
+
     if (flock (SERVER_FLCK, LOCK_EX|LOCK_NB)) {
 	return;
     }
@@ -484,7 +486,7 @@ sub getlock {
 
     eval {
 	alarm ($maxwait * 60);
-	
+
 	local $SIG{ALRM} = sub { alarm (0); die "got timeout\n"; };
 
 	if (!flock (SERVER_FLCK, LOCK_EX)) {
@@ -496,7 +498,7 @@ sub getlock {
 	alarm (0);
     };
     alarm (0);
-    
+
     my $err = $@;
 
     if ($err) {
@@ -536,7 +538,7 @@ sub get_lvm_device {
     close ($fd);
 
     return undef if !$out;
-   
+
     my @res = split (/\s+/, $out);
 
     my $dev = $res[0];
@@ -560,327 +562,371 @@ sub lvm_cleanup {
     debugmsg ('info', $@, $logfd) if $@;
 }
 
-sub archive_vm {
-    my ($vmlist, $vpsid, $dir, $tarfile, $logfd) = @_;
+sub determine_lvm {
+    my ($bckpar,$logfd) = @_;
 
-    if ($opt_noarch) {
-	debugmsg ('info', "synchronize to $dir", $logfd);
+    my $lvmmap = get_lvm_mapping();
+    my ($srcdev, $lvmpath, $lvmvg, $lvmlv, $fstype) =
+	get_lvm_device ($bckpar->{dir}, $lvmmap);
+
+    my $targetdev = get_lvm_device ($bckpar->{dumpdir}, $lvmmap);
+
+    if (!$lvmvg) {
+	$bckpar->{stopmode} = 'suspend';
+	debugmsg ('err', "unable to detect lvm volume group, " .
+		  "using 'suspend' mode", $logfd);
+    } elsif ($bckpar->{dir} !~ m|/?$lvmpath/?|) {
+	$bckpar->{stopmode} = 'suspend';
+	debugmsg ('err', "wrong lvm mount point '$lvmpath', " .
+		  "using 'suspend' mode", $logfd);
+    } elsif ($targetdev eq $srcdev) {
+	$bckpar->{stopmode} = 'suspend';
+	debugmsg ('err', "unable to dump into snapshot " .
+		  "(use option --dumpdir), using 'suspend' mode", $logfd);
     } else {
-	debugmsg ('info', "creating archive '$tarfile' ($dir)", $logfd);
+	$bckpar->{snapdev} = "/dev/$lvmvg/vzsnap";
+	$bckpar->{srcdev}  = $srcdev;
+	$bckpar->{lvmvg}   = $lvmvg;
+	$bckpar->{lvmlv}   = $lvmlv;
+	$bckpar->{fstype}  = $fstype;
+	$bckpar->{lvmpath} = $lvmpath;
+	return 1;
     }
-
-    my $zflag = $opt_compress ? 'z' : '';
-
-    my $srcconf = $vmlist->{$vpsid}->{conffile};
-    my $vmtype = $vmlist->{$vpsid}->{type};
-
-    my $bwl = $opt_bwlimit*1024; # bandwidth limit for cstream
-
-    if ($vmtype eq 'openvz') { 
-	mkpath "$dir/etc/vzdump";
-	run_command ($logfd, "$cpcmd $srcconf $dir/etc/vzdump/vps.conf");
-	my $cfgdir = dirname ($srcconf);
-	foreach my $s (@script_ext) {
-	    my $fn = "$cfgdir/$vpsid.$s";
-	    if (-f $fn) {
-		run_command ($logfd, "$cpcmd $fn $dir/etc/vzdump/vps.$s");
-	    }
-	}
-	if ($opt_sane) {
-	    my $arcfile="$dir/etc/vzdump/vps.dump";
-	    if($stopmode eq 'snapshot') {
-		# the dump file is stored in /tmp move to final
-		run_command ($logfd, "$cpcmd /tmp/vzdump-$vpsid.$$ $arcfile");
-		unlink "/tmp/vzdump-$vpsid.$$";
-	    }
-	    if ($opt_compress && $opt_noarch) {
-		# if it is archived then compress will act on the archive
-		run_command ($logfd, "$gzip -9 $arcfile");
-	    }
-	    
-	}
-	
-	if ($opt_stdexcludes) {
-	    find_add_exclude ('-files', '/var/log/.+');
-	    find_add_exclude ('-regex', '/tmp/.+');
-	    find_add_exclude ('-regex', '/var/tmp/.+');
-	    find_add_exclude ('-regex', '/var/run/.+pid');
-	}
-
-	# backup all types except sockets
-	my $findargs = join (' ', @findexcl) . ' -print0';
-	if( $opt_filesys ){
-	    $findargs = "-xdev " . $findargs;
-	}
-
-	my $cmd="";
-	if ($opt_noarch == 0){
-	    # create a tar archive
-	    $cmd = "(cd $dir; find . $findargs|tar c${zflag}pf - --totals --sparse --numeric-owner --no-recursion --ignore-failed-read --null -T -|cstream -t $bwl >$tarfile)";
-	} elsif ($stopmode eq "snapshot") {
-	    # in this case $tarfile contains the destination directory
-	    my $rsyncopts = "--stats --numeric-ids --bwlimit=${opt_bwlimit}";
-	    $cmd = "(cd $dir; find . $findargs | $rsync $rsyncopts -aH --delete --no-whole-file --inplace --files-from - $tarfile)";
-	} else {
-	    # we did an rsync snapshot to the destination already
-	}	    
-
-	if($cmd ne ""){
-	    run_command ($logfd, $cmd);
-	} else {
-	    debugmsg ('info', "snapshot in place -- done!", $logfd);
-	}
-
-    } else {
-	run_command ($logfd, "$cpcmd $srcconf $dir/qemu-server.conf");
-	my @filea = ('qemu-server.conf'); # always first file in tar
-	foreach my $file (<$dir/*>) {
-	    $file =~ s|^.*/([^/\s]+)$|$1|;
-	    next if $file =~ m/^-/;
-	    next if $file eq 'qemu-server.conf';
-	    push @filea, $file; 
-	}
-
-	my $files = join (' ', @filea);
-	my $cmd = "(tar cv${zflag}pf - -C '$dir' --totals --sparse --numeric-owner --ignore-failed-read $files|cstream -t $bwl >$tarfile)";
-	run_command ($logfd, $cmd);
-	unlink "$dir/qemu-server.conf";
-    }
+    return 0;
 }
 
-sub snapshot_vm {
-    my ($vmlist, $vpsid, $dumpdir, $tmpdir, $logfd) = @_;
+sub lvmsnapshot {
+    my ($bckpar, $logfd) = @_;
 
-    my $vmtype = $vmlist->{$vpsid}->{type};
-    my $dir = $vmlist->{$vpsid}->{dir};
+    debugmsg ('error', "Attempting lvmsnapshot() without successful determie_lvm()", $logfd) if( ! exists $bckpar->{snapdev});
 
-    my $running = 0;
+    mkpath "/mnt/vzsnap"; # create mount point for lvm snapshot
+
+    if (-b $bckpar->{snapdev}) {
+	debugmsg ('info', "trying to remove stale snapshot '$bckpar->{snapdev}'", $logfd);
+	lvm_cleanup ($logfd, $bckpar->{snapdev});
+    }
+
+    debugmsg ('info', "creating lvm snapshot of $bckpar->{srcdev} ('$bckpar->{snapdev}')", $logfd);
+    run_command ($logfd, "$lvcreate --size ${opt_snapsize}M --snapshot" .
+			 " --name vzsnap /dev/$bckpar->{lvmvg}/$bckpar->{lvmlv}");
+
+}
+
+sub mount_snapshot {
+    my ($bckpar, $logfd) = @_;
+
+    debugmsg ('info', "mounting lvm snapshot", $logfd);
+
+    my $mopts = "-o nouuid" if $bckpar->{fstype} eq 'xfs';
+
+    eval {
+	run_command ($logfd, "mount -t $bckpar->{fstype} $mopts $bckpar->{snapdev} /mnt/vzsnap");
+    };
+    my $err = $@;
+    if ($err) {
+	eval { run_command ($logfd, "$lvremove -f $bckpar->{snapdev}"); };
+	die "mounting snapshot failed - $err";
+    }
+
+    my $snapdir = $bckpar->{dir};
+    $snapdir =~ s|/?$bckpar->{lvmpath}/?|/mnt/vzsnap/|;
+
+    return $snapdir;
+}
+
+sub create_archive {
+    my ($src, $archive, $bckpar, $logfd) = @_;
+
+    my $zflag = $opt_compress ? 'z' : '';
+    my $bwl = $opt_bwlimit*1024; # bandwidth limit for cstream
+
+    if ($opt_stdexcludes) {
+	find_add_exclude ('-files', '/var/log/.+');
+	find_add_exclude ('-regex', '/tmp/.+');
+	find_add_exclude ('-regex', '/var/tmp/.+');
+	find_add_exclude ('-regex', '/var/run/.+pid');
+    }
+
+    # backup all types except sockets
+    my $findargs = join (' ', @findexcl) . ' -print0';
+    if( $opt_filesys ){
+	$findargs = "-xdev " . $findargs;
+    }
+
+    my $cmd = "(cd $src; find . $findargs|tar c${zflag}pf - --totals --sparse --numeric-owner --no-recursion --ignore-failed-read --null -T -| $cstream -t $bwl >$archive)";
+    run_command ($logfd, $cmd);
+}
+
+sub vm_status {
+    my ($bckpar,$logfd) = @_;
+
     my $status;
-    if ($vmtype eq 'openvz') {
-	$status = `$vzctl status $vpsid`;
+    if ($bckpar->{vmtype} eq 'openvz') {
+	$status = `$vzctl status $bckpar->{vpsid}`;
     } else {
-	$status = `qm status $vpsid`;
+	$status = `qm status $bckpar->{vpsid}`;
     }
     chomp $status;
-    $running = 1 if $status =~ m/running/;
+    $bckpar->{status} = $status;
+    $bckpar->{running} = ( $status =~ m/running/ );
 
     debugmsg ('info', "status = $status", $logfd);
 
-    my $snapdir = $dir;
+    return $bckpar->{status};
+}
 
-    return ($snapdir, undef) if !$running;
+sub rsync_vm {
+    my ($from,$to,$text,$bckpar,$logfd) = @_;
 
-    if (!$stopmode) {
-	debugmsg ('warn', "online backup without stop/suspend/snapshot", $logfd);
-	debugmsg ('warn', "this can lead to inconsistent data", $logfd);
-	return ($snapdir, undef);
-    }
-
-    if ($stopmode eq 'snapshot') {
-	
-	my $lvmmap = get_lvm_mapping();
-	my ($srcdev, $lvmpath, $lvmvg, $lvmlv, $fstype) = get_lvm_device ($dir, $lvmmap);
-
-	my $targetdev = get_lvm_device ($dumpdir, $lvmmap);
-
-	if (!$lvmvg) {
-	    $stopmode = 'suspend';
-	    debugmsg ('err', "unable to detect lvm volume group, " .
-		      "using 'suspend' mode", $logfd);
-	} elsif ($dir !~ m|/?$lvmpath/?|) {
-	    $stopmode = 'suspend';
-	    debugmsg ('err', "wrong lvm mount point '$lvmpath', " .
-		      "using 'suspend' mode", $logfd);
-	} elsif ($targetdev eq $srcdev) {
-	    $stopmode = 'suspend';
-	    debugmsg ('err', "unable to dump into snapshot " .
-		      "(use option --dumpdir), using 'suspend' mode", $logfd); 
-	} else {
-
-	    my $snapdev = "/dev/$lvmvg/vzsnap";
-
-	    mkpath "/mnt/vzsnap"; # create mount point for lvm snapshot
-			
-	    if (-b $snapdev) {
-		debugmsg ('info', "trying to remove stale snapshot '$snapdev'", $logfd);
-		lvm_cleanup ($logfd, $snapdev);
-	    }
-
-	    if ($opt_sane) {
-		# we definitely suspend, but as short as possible
-		debugmsg ('info', "suspend vps", $logfd);
-		if ($vmtype eq 'openvz') {
-		    run_command ($logfd, "$vzctl chkpnt $vpsid --suspend");
-		    my $dumpfile="/tmp/vzdump-$vpsid.$$";
-		    debugmsg ('info', "dump state of vps to $dumpfile", $logfd);
-		    run_command ($logfd, "$vzctl chkpnt $vpsid --dump --dumpfile $dumpfile");
-		} else {
-		    run_command ($logfd, "qm suspend $vpsid");
-		}
-	    }
-		
-	    debugmsg ('info', "creating lvm snapshot of $srcdev ('$snapdev')", $logfd);
-	    run_command ($logfd, "$lvcreate --size ${opt_snapsize}M --snapshot" .
-			 " --name vzsnap /dev/$lvmvg/$lvmlv");
-
-	    if ($opt_sane){
-		debugmsg ('info', "resume vps", $logfd);
-		if ($vmtype eq 'openvz') {
-		    run_command ($logfd, "$vzctl chkpnt $vpsid --resume");
-		} else {
-		    run_command ($logfd, "qm resume $vpsid");
-		}
-	    }
-
-	    debugmsg ('info', "mounting lvm snapshot", $logfd);
-
-	    my $mopts = '';
-	    $mopts = "-o nouuid" if $fstype eq 'xfs';
-
-	    eval { run_command ($logfd, "mount -t $fstype $mopts $snapdev /mnt/vzsnap"); };
-	    my $err = $@;
-	    if ($err) {
-		eval { run_command ($logfd, "$lvremove -f $snapdev"); };
-		die "mounting snapshot failed - $err";
-	    }
-	    
-	    $snapdir =~ s|/?$lvmpath/?|/mnt/vzsnap/|;
-
-	    return ($snapdir, $snapdev);
-	}
-    }
-    
-    if(! $opt_noarch ){
-	rmtree $tmpdir;
-	mkdir $tmpdir || die "unable to create temporary directory '$tmpdir'";
-    } else {
-	# tmpdir is the final snapshot, not temporary
-	mkdir $tmpdir || die "unable to create snapshot directory '$tmpdir'";
-    }
+    debugmsg ('info', "starting $text sync $from to $to", $logfd);
+    my $starttime = time();
 
     my $rsyncopts = "--stats --numeric-ids --bwlimit=${opt_bwlimit}";
     if( $opt_filesys ){
 	$rsyncopts .= " -x";
     }
 
-    my $synccmd = "$rsync $rsyncopts -aH --delete --no-whole-file --inplace $dir $tmpdir";
-    debugmsg ('info', "starting first sync $dir to $tmpdir", $logfd);
-    my $starttime = time();
+    my $synccmd = "$rsync $rsyncopts -aH --delete --no-whole-file --inplace $from $to";
 
     run_command ($logfd, $synccmd);
 
     my $delay = time () - $starttime;
 
-    debugmsg ('info', "first sync finished ($delay seconds)", $logfd);
+    debugmsg ('info', "$text sync finished ($delay seconds)", $logfd);
+}
 
-    my $stoptime = time();
+sub freeze_vm {
+    my ($bckpar, $logfd) = @_;
 
-    if ($stopmode eq 'stop') {
+    if ($bckpar->{stopmode} eq 'stop') {
 	debugmsg ('info', "stopping vps", $logfd);
-	if ($vmtype eq 'openvz') {
-	    run_command ($logfd, "$vzctl stop $vpsid");
+	if ($bckpar->{vmtype} eq 'openvz') {
+	    run_command ($logfd, "$vzctl stop $bckpar->{vpsid}");
 	} else {
 	    my $wait = $opt_stopwait * 60;
 	    # send shutdown and wait
-	    run_command ($logfd, "qm shutdown $vpsid && qm wait $vpsid $wait");
+	    run_command ($logfd, "qm shutdown $bckpar->{vpsid} && qm wait $bckpar->{vpsid} $wait");
 	}
-    } elsif ($stopmode eq 'suspend') {
+    } elsif ($bckpar->{stopmode} eq 'suspend') {
 	debugmsg ('info', "suspend vps", $logfd);
-	if ($vmtype eq 'openvz') {
-	    run_command ($logfd, "$vzctl chkpnt $vpsid --suspend");
+	if ($bckpar->{vmtype} eq 'openvz') {
+	    run_command ($logfd, "$vzctl chkpnt $bckpar->{vpsid} --suspend");
 	} else {
-	    run_command ($logfd, "qm suspend $vpsid");
+	    run_command ($logfd, "qm suspend $bckpar->{vpsid}");
 	}
+    } else {
+	debugmsg ('warn', "online backup without stop/suspend/snapshot", $logfd);
+	debugmsg ('warn', "this can lead to inconsistent data", $logfd);
     }
-
-    debugmsg ('info', "final sync $dir to $tmpdir", $logfd);
-    
-    $starttime = time();
-    run_command ($logfd, $synccmd);
-
-    $delay = time () - $starttime;
-    debugmsg ('info', "final sync finished ($delay seconds)", $logfd);
-
-    if ($stopmode eq 'stop') {
-	debugmsg ('info', "restarting vps", $logfd);
-	if ($vmtype eq 'openvz') {
-	    run_command ($logfd, "$vzctl start $vpsid");
-	} else {
-	    run_command ($logfd, "qm start $vpsid");
-	}
-    } elsif ($stopmode eq 'suspend') {
-	if ($opt_sane) {
-	    my $etcdump="$tmpdir/$vpsid/etc/vzdump";
-	    mkpath $etcdump;
-	    my $dumpfile="$etcdump/vps.dump";
-	    debugmsg ('info', "dump state of vps to $dumpfile", $logfd);
-	    run_command ($logfd, "$vzctl chkpnt $vpsid --dump --dumpfile $dumpfile");
-	}
-	debugmsg ('info', "resume vps", $logfd);
-	if ($vmtype eq 'openvz') {
-	    run_command ($logfd, "$vzctl chkpnt $vpsid --resume");
-	} else {
-	    run_command ($logfd, "qm resume $vpsid");
-	}
-    }
-
-    $delay = time () - $stoptime;
-
-    debugmsg ('info', "vps is online again after $delay seconds", $logfd);
-    
-    $snapdir = "$tmpdir/$vpsid";
-
-    return ($snapdir, undef);
 }
 
+sub dump_checkpoint {
+    my ($bckpar, $logfd) = @_;
+
+    mkpath $bckpar->{ctrldir};
+
+    if ($bckpar->{vmtype} eq 'openvz') {
+	debugmsg ('info', "dump state of vps to $bckpar->{ctrldir}/state.bin", $logfd);
+	run_command ($logfd, "$vzctl chkpnt $bckpar->{vpsid} --dump --dumpfile $bckpar->{ctrldir}/state.bin");
+    } else {
+	# TODO
+	debugmsg ('warn', "Dumping of qm state currently not supported!", $logfd);
+    }
+}
+
+sub resume_vm {
+    my ($bckpar, $logfd) = @_;
+
+    if ($bckpar->{stopmode} eq 'stop') {
+	debugmsg ('info', "restarting vps", $logfd);
+	if ($bckpar->{vmtype} eq 'openvz') {
+	    run_command ($logfd, "$vzctl start $bckpar->{vpsid}");
+	} else {
+	    run_command ($logfd, "qm start $bckpar->{vpsid}");
+	}
+    } elsif ($bckpar->{stopmode} eq 'suspend') {
+	debugmsg ('info', "resume vps", $logfd);
+	if ($bckpar->{vmtype} eq 'openvz') {
+	    run_command ($logfd, "$vzctl chkpnt $bckpar->{vpsid} --resume");
+	} else {
+	    run_command ($logfd, "qm resume $bckpar->{vpsid}");
+	}
+    } else {
+	debugmsg ('warn', "online backup without stop/suspend/snapshot", $logfd);
+	debugmsg ('warn', "noting to resume", $logfd);
+    }
+}
+
+sub flush_ctrl {
+    my ($dest, $bckpar, $logfd) = @_;
+
+    # check, if we used a temporary directory
+    my $is_final = ( $bckpar->{ctrldir} =~ m/^$bckpar->{snapdir}/ );
+    # check, if we produced something
+    my $ctrlfiles = 0;
+    opendir(DIR,$bckpar->{ctrldir});
+    $ctrlfiles  = scalar(grep( !/^\.\.?$/,readdir(DIR)));
+    closedir(DIR);
+
+    if( $ctrlfiles ){
+	if( -e "$bckpar->{ctrldir}/state.bin" ){
+	    # this file is heavily inflated, compress before copy
+	    unlink "$bckpar->{ctrldir}/state.bin.gz";
+	    run_command ($logfd, "$gzip -9 '$bckpar->{ctrldir}/state.bin'");
+	}
+	if( ! $is_final ){
+	    mkpath $dest;
+	    run_command ($logfd, "$cpcmd -aR $bckpar->{ctrldir}/* $dest");
+	}
+    }
+
+    rmtree $bckpar->{ctrldir} unless($is_final);
+}
+
+sub copy_conf {
+    my ($dest,$bckpar,$logfd) = @_;
+
+    if ($bckpar->{vmtype} eq 'openvz') {
+	mkpath "$dest";
+	run_command ($logfd, "$cpcmd $bckpar->{srcconf} $dest/vps.conf");
+	my $cfgdir = dirname ($bckpar->{srcconf});
+	foreach my $s (@script_ext) {
+	    my $fn = "$cfgdir/$bckpar->{vpsid}.$s";
+	    if (-f $fn) {
+		run_command ($logfd, "$cpcmd $fn $dest/vps.$s");
+	    }
+	}
+    } else {
+	run_command ($logfd, "$cpcmd $bckpar->{srcconf} $dest/qemu-server.conf");
+    }
+}
+
+
 sub vm_backup {
-    my ($vmlist, $vpsid, $dumpdir, $tmpdir, $tarfile, $logfd) = @_;
+    my ($vmlist, $bckpar, $logfd) = @_;
 
-    my $dir = $vmlist->{$vpsid}->{dir};
-    die "directory '$dir' does not exist\n" if ! -d $dir;
-
-    my ($snapdir, $snapdev);
+    die "directory '$bckpar->{dir}' does not exist\n" if ! -d $bckpar->{dir};
 
     my $size = 0;
-   
-    my $tmptar = $tarfile;
-    $tmptar =~ s/\.[^\.]+$/\.dat/;
 
     eval {
-	my $tmd = $tmpdir;
-	$tmd = $dumpdir if ($opt_noarch && ($stopmode ne 'snapshot'));
-	($snapdir, $snapdev) = snapshot_vm ($vmlist, $vpsid, $dumpdir, $tmd, $logfd);
-
-	if ($opt_noarch) {
-	    archive_vm ($vmlist, $vpsid, $snapdir, $dumpdir, $logfd);
-	    $size = run_command($logfd,"$ducmd --max-depth 0 $dumpdir");
-	    $size =~ s/\s.*$//g;
-	    my $cs = format_size ($size); 
-	    debugmsg ('info', "directory size $cs", $logfd);
+	#
+	# Phase 1: determine method
+	#
+	# whether we use rsync or LVM snapshot
+	$bckpar->{use_lvm} = ($bckpar->{stopmode} eq 'snapshot')? 1 : 0;
+	$bckpar->{use_lvm} = determine_lvm($bckpar,$logfd)
+	    if ($bckpar->{use_lvm});
+	# whether we shall produce a VE state file
+	$bckpar->{dump_checkpoint} = 0;
+	vm_status($bckpar);
+	if ( $bckpar->{running} && $opt_sane){
+	    $bckpar->{stopmode} = 'suspend' if($bckpar->{use_lvm});
+	    $bckpar->{dump_checkpoint} = 1 if($bckpar->{stopmode} eq 'suspend');
+	}
+	# we will copy from dir - [snapdir] - dumpdir
+	$bckpar->{snapdir} = ($opt_noarch)? $bckpar->{dumpdir} : $bckpar->{tmpdir};
+	# since we do rsync /my/src/path /my/dst, the base will be /my/dst/path!
+	my $subdir = $bckpar->{dir};
+	$subdir =~ s+^.*/+/+;
+	$subdir =~ s+/*$++;
+	$bckpar->{dstdir} = "$bckpar->{snapdir}$subdir";
+	# where to put the checkpointing dump files
+	if( $bckpar->{dump_checkpoint} ){
+	    if(! $bckpar->{use_lvm} ){
+		$bckpar->{ctrldir} = "$bckpar->{dstdir}/etc/vzdump";
+	    } else {
+		# snapshot is not mounted then -- stash it temporarily
+		$bckpar->{ctrldir} = "$bckpar->{tmppdir}/ctrl";
+	    }
+	}
+	#
+	# Phase 2: pre-snapshot rsync
+	#
+	if((! $bckpar->{use_lvm} ) && ($bckpar->{running})){
+	    rsync_vm($bckpar->{dir},$bckpar->{snapdir},"first",$bckpar,$logfd);
+	}
+	#
+	# Phase 3: freeze machine
+	#
+	# note: 'snapshot' is a legacy name meaning not to freeze the machine
+	if(( $bckpar->{stopmode} ne 'snapshot' ) &&
+	   ( $bckpar->{running})){
+	    $bckpar->{stoptime} = time();
+	    freeze_vm($bckpar,$logfd);
+	}
+	#
+        # Phase 4: snapshot
+        #
+	if(! $bckpar->{use_lvm} ){
+	    rsync_vm($bckpar->{dir},$bckpar->{snapdir},"final",$bckpar,$logfd);
 	} else {
-	    unlink $tmptar;
+	    lvmsnapshot($bckpar,$logfd);
+	}
+	if ( $bckpar->{dump_checkpoint} ){
+	    dump_checkpoint($bckpar,$logfd);
+	}
+	#
+	# Phase 5: unfreeze machine
+	#
+	if(( $bckpar->{stopmode} ne 'snapshot' ) &&
+	   ( $bckpar->{running})){
+	    resume_vm($bckpar,$logfd);
+	    my $delay = time () - $bckpar->{stoptime};
+	    debugmsg ('info', "vps is online again after $delay seconds", $logfd);
+	}
+	#
+	# Phase 6: assemble archive image
+	#
+	my $dest = "$bckpar->{dstdir}/etc/vzdump";
+	if( $bckpar->{use_lvm} ){
+	    my $bckpar->{lvmsnap} = mount_snapshot($bckpar,$logfd);
+	    if( $opt_noarch ){
+		# files cannot stay here
+		rsync_vm($bckpar->{lvmsnap},$bckpar->{snapdir},"archiving",$bckpar,$logfd);
+	    } else {
+		$dest = "$bckpar->{lvmsnap}/etc/vzdump";
+	    }
+	}
+	flush_ctrl($dest,$bckpar,$logfd) if( exists $bckpar->{ctrldir} );
+	copy_conf($dest,$bckpar,$logfd);
+	$dest =~ s+/etc/vzdump$++;
+	#
+	# Phase 7: produce archive and determine size
+	#
+	if(! $opt_noarch ){
+	    $bckpar->{tmptar} = $bckpar->{tarfile};
+	    $bckpar->{tmptar} =~ s/\.[^\.]+$/\.dat/;
+	    unlink $bckpar->{tmptar};
+	    create_archive($dest,$bckpar->{tmptar},$bckpar,$logfd);
+	    $size = -s $bckpar->{tmptar};
 
-	    archive_vm ($vmlist, $vpsid, $snapdir, $tmptar, $logfd);
-
-	    $size = -s $tmptar;
-	
-	    my $cs = format_size ($size); 
+	    my $cs = format_size ($size);
 	    debugmsg ('info', "file size $cs", $logfd);
 
-	    rename ($tmptar, $tarfile) ||
-		die "unable to rename '$tmptar' to '$tarfile'\n";
+	    rename ($bckpar->{tmptar}, $bckpar->{tarfile}) ||
+		die "unable to rename '$bckpar->{tmptar}' to '$bckpar->{tarfile}'\n";
+
+	} else {
+	    $size = run_command($logfd,"$ducmd --max-depth 0 $bckpar->{dumpdir}");
+	    $size =~ s/\s.*$//g;
+	    my $cs = format_size ($size);
+	    debugmsg ('info', "directory size $cs", $logfd);
 	}
     };
 
     my $err = $@;
 
-    # cleanup
+    #
+    # Phase 8: clean-up
+    #
 
-    lvm_cleanup ($logfd, $snapdev) if $snapdev;
-    rmtree $tmpdir;
+    lvm_cleanup ($logfd, $bckpar->{snapdev}) if ( exists $bckpar->{snapdev} );
+    rmtree $bckpar->{tmpdir};
     rmdir "/mnt/vzsnap" if $opt_snap;
 
-    unlink $tmptar unless ( $opt_noarch );
+    unlink $bckpar->{tmptar} if ( exists $bckpar->{tmptar} );
 
     die $err if $err; # propagate error
 
@@ -929,7 +975,7 @@ sub send_mail {
 	$rcvrarg .= " '$r'";
     }
 
-    open (MAIL,"|$sendmail -B 8BITMIME $rcvrarg") || 
+    open (MAIL,"|$sendmail -B 8BITMIME $rcvrarg") ||
 	die "unable to open $sendmail - $!";
 
     my $rcvrtxt = join (', ', @$mailto);
@@ -956,14 +1002,14 @@ sub send_mail {
     foreach my $vpsid (sort keys %$status) {
 	if  ($status->{$vpsid}->{state} eq 'ok') {
 
-	    print MAIL sprintf ("${fill}%-10s %-6s %10s %10s  %s\n", $vpsid, 
-				$status->{$vpsid}->{state}, 
+	    print MAIL sprintf ("${fill}%-10s %-6s %10s %10s  %s\n", $vpsid,
+				$status->{$vpsid}->{state},
 				format_time($status->{$vpsid}->{backuptime}),
 				format_size ($status->{$vpsid}->{size}),
 				$status->{$vpsid}->{tarfile});
 	} else {
-	    print MAIL sprintf ("${fill}%-10s %-6s %10s %8.2fMB  %s\n", $vpsid, 
-				$status->{$vpsid}->{state}, 
+	    print MAIL sprintf ("${fill}%-10s %-6s %10s %8.2fMB  %s\n", $vpsid,
+				$status->{$vpsid}->{state},
 				format_time($status->{$vpsid}->{backuptime}),
 				0, '-');
 	}
@@ -1012,15 +1058,15 @@ sub send_mail {
 
 	    $ssize += $status->{$vpsid}->{size};
 
-	    print MAIL sprintf ("<tr><td>%s<td>%s<td>OK<td>%s<td align=right>%s<td>%s</tr>\n", 
+	    print MAIL sprintf ("<tr><td>%s<td>%s<td>OK<td>%s<td align=right>%s<td>%s</tr>\n",
 				$vpsid, $name,
 				format_time($status->{$vpsid}->{backuptime}),
 				format_size ($status->{$vpsid}->{size}),
 				escape_html ($status->{$vpsid}->{tarfile}));
 	} else {
 	    print MAIL sprintf ("<tr><td>%s<td>%s<td><font color=red>FAILED<td>%s<td colspan=2>%s</tr>\n",
- 
-				$vpsid, $name, format_time($status->{$vpsid}->{backuptime}), 
+
+				$vpsid, $name, format_time($status->{$vpsid}->{backuptime}),
 				escape_html ($status->{$vpsid}->{msg}));
 	}
     }
@@ -1044,10 +1090,10 @@ sub send_mail {
 	open (TMP, "$log");
 	while (my $line = <TMP>) {
 	    if ($line =~ m/^\S+\s\d+\s+\d+:\d+:\d+\s+(ERROR|WARN):/) {
-		print MAIL encode8bit ("$vpsid: <font color=red>". 
-				       escape_html ($line) . "</font>"); 
+		print MAIL encode8bit ("$vpsid: <font color=red>".
+				       escape_html ($line) . "</font>");
 	    } else {
-		print MAIL encode8bit ("$vpsid: " . escape_html ($line)); 
+		print MAIL encode8bit ("$vpsid: " . escape_html ($line));
 	    }
 	}
 	close (TMP);
@@ -1118,7 +1164,7 @@ sub restore_openvz {
     }
     if (-d $root) {
 	die "unable to restore VPS '${vpsid}' - directory '$root' already exists\n";
-    } 
+    }
 
     eval {
 	mkpath $private || die "unable to create private dir '$private'";
@@ -1216,7 +1262,7 @@ $opt_all = 1 if $opt_exclude;
 if ($opt_all && ($#ARGV >= 0 || $opt_restore)) {
     print_usage ();
     exit (-1);
-} 
+}
 
 if (!$opt_all && $#ARGV == -1) {
     print_usage ();
@@ -1244,8 +1290,8 @@ if (!$opt_all) {
 }
 
 if ($opt_exclude) {
-    foreach my $vpsid (@$opt_exclude) { 
-	check_vpsid ($vpsid); 
+    foreach my $vpsid (@$opt_exclude) {
+	check_vpsid ($vpsid);
     }
 }
 
@@ -1260,6 +1306,7 @@ check_bin (\$vzctl);
 check_bin (\$qmctl);
 check_bin (\$sendmail, "sendmail not installed?");
 check_bin (\$rsync, "rsync not installed?");
+check_bin (\$gzip, "gzip not installed?");
 
 if ($opt_snap) {
     check_bin (\$lvcreate, "lvm2 not installed?");
@@ -1267,12 +1314,10 @@ if ($opt_snap) {
     check_bin (\$lvremove, "lvm2 not installed?");
 }
 
-if ($opt_compress) {
-    check_bin (\$gzip, "gzip not installed?");
-}
-
 if ($opt_noarch) {
     check_bin (\$ducmd, "du not installed?");
+} else {
+    check_bin (\$cstream, "cstream not installed?");
 }
 
 # parameters are OK - no start real work and log everything
@@ -1327,7 +1372,7 @@ eval {
     $opt_bwlimit = $def->{bwlimit} if !$opt_bwlimit;
     $opt_snapsize = $def->{size} if !$opt_snapsize;
     $opt_stopwait = $def->{stopwait} if !$opt_stopwait;
-       
+
     $stopmode = $def->{mode} if ($def->{mode});
     $stopmode = 'stop' if $opt_stop;
     $stopmode = 'suspend' if $opt_suspend;
@@ -1385,18 +1430,28 @@ eval {
 	}
 
 	my $logfd;
-	
+
 	my $vmstarttime = time ();
 
 	my $basename = "vzdump-${vpsid}";
-	my $tarfile = $res->{tarfile} = "$dumpdir/$basename". ($opt_compress ? '.tgz' : '.tar');
-	my $logfile = "$dumpdir/$basename.log";
+	my $logfile  = "$dumpdir/$basename.log";
+	my $tmplog   = "$logdir/$vpsid.log";
+
+	my $bckpar = {
+	    dumpdir  => $dumpdir,                        # create an image here
+	    tmpdir   => $tmpdir,                         # stash files here
+	    vmtype   => $vmlist->{$vpsid}->{type},       # VM type (openvz,qemu)
+	    dir      => $vmlist->{$vpsid}->{dir},        # VM root directory
+	    vpsid    => $vpsid,                          # VM ID
+	    stopmode => $stopmode,                       # how to freeze the VM
+	    srcconf  => $vmlist->{$vpsid}->{conffile},   # VM configuraion file
+	};
+
+	$bckpar->{tarfile} = $res->{tarfile} = "$dumpdir/$basename". ($opt_compress ? '.tgz' : '.tar');
 
 	eval {
 	    exists ($vmlist->{$vpsid}) ||
 		die "unable to find VPS '$vpsid'\n";
-
-	    my $tmplog = "$logdir/$vpsid.log";
 
 	    $logfd = IO::File->new (">$tmplog") ||
 		die "unable to create log file '$tmplog'";
@@ -1405,11 +1460,9 @@ eval {
 
 	    unlink $logfile;
 
-	    my $vmtype = $vmlist->{$vpsid}->{type};
+	    debugmsg ('info',  "Starting Backup of VM $vpsid ($bckpar->{vmtype})", $logfd, 1);
 
-	    debugmsg ('info',  "Starting Backup of VM $vpsid ($vmtype)", $logfd, 1);
-
-	    $res->{size} = vm_backup ($vmlist, $vpsid, $dumpdir, $tmpdir, $tarfile, $logfd);
+	    $res->{size} = vm_backup ($vmlist, $bckpar, $logfd);
 	};
 
 	my $err = $@;
@@ -1421,10 +1474,10 @@ eval {
 	    $res->{msg} = $err;
 	    debugmsg ('err', "Backup of VM $vpsid failed - $err", $logfd, 1);
 	} else {
-	    $res->{state} = 'ok';	    
-	    debugmsg ('info', 
-		      sprintf ("Finished Backup of VM $vpsid (%s)", 
-			       format_time ($delay)), 
+	    $res->{state} = 'ok';
+	    debugmsg ('info',
+		      sprintf ("Finished Backup of VM $vpsid (%s)",
+			       format_time ($delay)),
 		      $logfd, 1);
 	}
 
@@ -1440,7 +1493,7 @@ eval {
     }
 
     my $totaltime = time() - $starttime;
- 
+
     if ($opt_mailto) {
 	eval {
 	    send_mail ($opt_mailto, $status, $cmdline, $totaltime);
@@ -1462,7 +1515,7 @@ exit (0);
 __END__
 
 =head1 NAME
-                                          
+
 vzdump - backup and restore utility for virtual machine
 
 =head1 SYNOPSIS
@@ -1471,8 +1524,8 @@ vzdump OPTIONS [--all | <VMID>]
 
 --exclude VPSID         exclude VPSID (assumes --all)
 
---exclude-path REGEX    exclude certain files/directories. You 
-                        can use this option more than once to specify 
+--exclude-path REGEX    exclude certain files/directories. You
+                        can use this option more than once to specify
                         multiple exclude paths
 
 --stdexcludes           exclude temorary files and logs
@@ -1490,8 +1543,8 @@ vzdump OPTIONS [--all | <VMID>]
 --tmpdir DIR            store temporary files in DIR. --suspend and --stop
                         are using this directory to store a copy of the VM.
 
---mailto EMAIL          send notification mail to EMAIL. You can use 
-                        this option more than once to specify multiple 
+--mailto EMAIL          send notification mail to EMAIL. You can use
+                        this option more than once to specify multiple
                         receivers
 
 --stop                  stop/start VPS if running
@@ -1506,7 +1559,7 @@ vzdump OPTIONS [--all | <VMID>]
                         using an LVM snapshot.
 
 --size MB               LVM snapshot size (default 1024)
-    
+
 --bwlimit KBPS          limit I/O bandwidth; KBytes per second
 
 --lockwait MINUTES      maximal time to wait for the global
@@ -1535,14 +1588,14 @@ There are several ways to provide consistency:
 
 =head1 CONFIGURATION
 
-Global configuration is stored in /etc/vzdump.conf. 
+Global configuration is stored in /etc/vzdump.conf.
 
  tmpdir: DIR
  dumpdir: DIR
  mode: snapshot|suspend|stop
  bwlimit: KBPS
- lockwait: MINUTES 
- stopwait: MINUTES 
+ lockwait: MINUTES
+ stopwait: MINUTES
  size: MB
 
 =head1 FILES
@@ -1592,8 +1645,10 @@ Backup all VMSs excluding VM 101 and 102
 
 Dietmar Maurer <dietmar@proxmox.com>
 
-Many thanks to Proxmox Server Solutions (www.proxmox.com) for sponsoring 
+Many thanks to Proxmox Server Solutions (www.proxmox.com) for sponsoring
 this work.
+
+Contributors: Lars Hanke <lars@lhanke.de>
 
 =head1 COPYRIGHT AND DISCLAIMER
 
