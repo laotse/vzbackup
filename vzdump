@@ -618,7 +618,8 @@ sub mount_snapshot {
 
     debugmsg ('info', "mounting lvm snapshot", $logfd);
 
-    my $mopts = "-o nouuid" if $bckpar->{fstype} eq 'xfs';
+    my $mopts = "";
+    $mopts = "-o nouuid" if $bckpar->{fstype} eq 'xfs';
 
     eval {
 	run_command ($logfd, "mount -t $bckpar->{fstype} $mopts $bckpar->{snapdev} /mnt/vzsnap");
@@ -802,6 +803,15 @@ sub copy_conf {
     }
 }
 
+# This is only a debugging helper -- not called in the production version
+sub dump_bckpar {
+    my ($bckpar, $logfd) = @_;
+
+    debugmsg('info', "Dumping current 'bckpar' parameters", $logfd);
+    foreach my $k (keys %$bckpar){
+	debugmsg('info', "bckpar->$k:\t$bckpar->{$k}", $logfd);
+    }
+}
 
 sub vm_backup {
     my ($vmlist, $bckpar, $logfd) = @_;
@@ -838,7 +848,7 @@ sub vm_backup {
 		$bckpar->{ctrldir} = "$bckpar->{dstdir}/etc/vzdump";
 	    } else {
 		# snapshot is not mounted then -- stash it temporarily
-		$bckpar->{ctrldir} = "$bckpar->{tmppdir}/ctrl";
+		$bckpar->{ctrldir} = "$bckpar->{tmpdir}/ctrl";
 	    }
 	}
 	#
@@ -881,7 +891,7 @@ sub vm_backup {
 	#
 	my $dest = "$bckpar->{dstdir}/etc/vzdump";
 	if( $bckpar->{use_lvm} ){
-	    my $bckpar->{lvmsnap} = mount_snapshot($bckpar,$logfd);
+	    $bckpar->{lvmsnap} = mount_snapshot($bckpar,$logfd);
 	    if( $opt_noarch ){
 		# files cannot stay here
 		rsync_vm($bckpar->{lvmsnap},$bckpar->{snapdir},"archiving",$bckpar,$logfd);
