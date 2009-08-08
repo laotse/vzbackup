@@ -655,6 +655,7 @@ sub create_archive {
 	$findargs = "-xdev " . $findargs;
     }
 
+    debugmsg ('info', "creating temporary archive '$archive'", $logfd);
     my $cmd = "(cd $src; find . $findargs|tar c${zflag}pf - --totals --sparse --numeric-owner --no-recursion --ignore-failed-read --null -T -| $cstream -t $bwl >$archive)";
     run_command ($logfd, $cmd);
 }
