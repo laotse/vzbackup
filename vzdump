@@ -305,7 +305,7 @@ sub read_vzdump_defaults {
 }
 
 # read global vz.conf
-sub read_glogal_vz_config {
+sub read_global_vz_config {
 
     local $/;
 
@@ -1235,7 +1235,7 @@ sub restore_openvz {
 
     debugmsg ('info', "restore openvz image '${opt_restore}' using ID $vpsid");
 
-    my $vzconf = read_glogal_vz_config ();
+    my $vzconf = read_global_vz_config ();
     my $cfgdir = "$vzdir/conf";
     my $conffile = "$cfgdir/${vpsid}.conf";
     my $private = "$vzconf->{privatedir}/${vpsid}";
@@ -1250,7 +1250,7 @@ sub restore_openvz {
 
     eval {
 	safe_mkpath $private || die "unable to create private dir '$private'";
-	safe_mkpath $root || die "unable to create private dir '$private'";
+	safe_mkpath $root || die "unable to create root dir '$root'";
 
 	restore_files( $opt_restore, $private );
 
@@ -1481,7 +1481,7 @@ eval {
     my $dumpdir;
 
     if ($vzctl) {
-	my $vzconf = read_glogal_vz_config ();
+	my $vzconf = read_global_vz_config ();
 	read_vz_list ($vzconf, $vmlist);
 	$dumpdir = $vzconf->{dumpdir};
     }
