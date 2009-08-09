@@ -55,6 +55,7 @@ my $opt_stdexcludes;
 my $opt_noarch = 0;
 my $opt_sane = 0;
 my $opt_filesys = 0;
+my $opt_lvm = 0;
 
 my $stopmode = '';
 
@@ -436,20 +437,21 @@ sub print_usage {
 
     print STDERR "usage: $0 OPTIONS [--all | VPSID]\n\n";
     print STDERR "\t--exclude VPSID\t\texclude VPSID (assumes --all)\n";
-    print STDERR "\t--exclude-path REGEX\texclude certain files/directories\n";     print STDERR "\t--stdexcludes\t\texclude temorary files and logs\n\n";
+    print STDERR "\t--exclude-path REGEX\texclude certain files/directories\n";     print STDERR "\t--stdexcludes\t\texclude temorary files and logs\n";
     print STDERR "\t--one-filesystem\tdo not recurse directories across file system\n\t\t\t\tborders\n\n";
     print STDERR "\t--compress\t\tcompress dump file (gzip)\n";
     print STDERR "\t--no-archive\t\tjust copy files, do not create an archive\n";
     print STDERR "\t--dumpdir DIR\t\tstore resulting files in DIR\n";
-    print STDERR "\t--tmpdir DIR\t\tstore temporary files in DIR\n\n";
+    print STDERR "\t--tmpdir DIR\t\tstore temporary files in DIR\n";
+    print STDERR "\t--lvm\t\t\tuse LVM2 snapshot feature, if available\n";
+    print STDERR "\t--size MB\t\tLVM snapshot size\n";
 
     print STDERR "\t--mailto EMAIL\t\tsend notification mail to EMAIL.\n";
-    print STDERR "\t--quiet\t\t\tbe quiet.\n";
+    print STDERR "\t--quiet\t\t\tbe quiet.\n\n";
     print STDERR "\t--stop\t\t\tstop/start VPS if running\n";
     print STDERR "\t--suspend\t\tsuspend/resume VPS when running\n";
-    print STDERR "\t--snapshot\t\tuse LVM snapshot when running\n";
-    print STDERR "\t--sane\t\t\tuses checkpointing with snapshot to store the\n\t\t\t\tfull state of the machine. It includes the\n\t\t\t\tcheckpointing dump file.\n";
-    print STDERR "\t--size MB\t\tLVM snapshot size\n\n";
+    print STDERR "\t--snapshot\t\tsnapshot life VM, implies --lvm\n";
+    print STDERR "\t--sane\t\t\tuses checkpointing with snapshot to store the\n\t\t\t\tfull state of the machine. It includes the\n\t\t\t\tcheckpointing dump file.\n\n";
 
     print STDERR "\t--node CID\t\tonly run on pve cluster node CID\n";
     print STDERR "\t--lockwait MINUTES\tmaximal time to wait for the global lock\n";
@@ -855,6 +857,7 @@ sub vm_backup {
 	#
 	# whether we use rsync or LVM snapshot
 	$bckpar->{use_lvm} = ($bckpar->{stopmode} eq 'snapshot')? 1 : 0;
+	$bckpar->{use_lvm} = 1 if( $opt_lvm );
 	$bckpar->{use_lvm} = determine_lvm($bckpar,$logfd)
 	    if ($bckpar->{use_lvm});
 	# whether we shall produce a VE state file
@@ -1269,6 +1272,7 @@ if (!GetOptions ('all' => \$opt_all,
 		 'sane' => \$opt_sane,
 		 'no-archive' => \$opt_noarch,
 		 'one-filesystem' => \$opt_filesys,
+		 'lvm' => \$opt_lvm,
 		 'size=i' => \$opt_snapsize,
 		 'node=i' => \$opt_node,
 		 'bwlimit=i' => \$opt_bwlimit,
@@ -1581,6 +1585,11 @@ vzdump OPTIONS [--all | <VMID>]
 
 --tmpdir DIR            store temporary files in DIR. --suspend and --stop
                         are using this directory to store a copy of the VM.
+
+--lvm                   use LVM2 snapshots, if available, to minimize
+                        downtime. This is required and included , if
+                        --snapshot, i.e. a life image of the VM, is
+                        selected.
 
 --mailto EMAIL          send notification mail to EMAIL. You can use
                         this option more than once to specify multiple
