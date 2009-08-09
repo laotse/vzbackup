@@ -28,6 +28,7 @@ use Fcntl ':flock';
 use Sys::Syslog;
 use File::Path;
 use File::Basename;
+use File::Spec;
 use IO::File;
 use IO::Select;
 use IPC::Open3;
@@ -92,6 +93,33 @@ my $debugstattxt = {
 };
 
 # helper functions
+
+my @safe_paths = ();
+
+sub safe_mkpath {
+    my $path = shift;
+    $path = File::Spec->canonpath($path);
+    $path = File::Spec->rel2abs($path);
+    @safe_paths = (@safe_paths, mkpath( $path ));
+}
+
+sub safe_rmtree {
+    my $path = shift;
+    $path = File::Spec->canonpath($path);
+    $path = File::Spec->rel2abs($path);
+    foreach my $i (0..$#safe_paths) {
+	my $p = $safe_paths[$i];
+	if( $path =~ /^$p/ ){
+	    rmtree( $path );
+	    if( $path eq $p ){
+		slice(@safe_paths,$i,1);
+		return;
+	    }
+	}
+    }
+    debugmsg('warn',"Unsafe directory $path not removed") if( -d $path );
+
+}
 
 sub debugmsg {
     my ($mtype, $msg, $logfd, $syslog) = @_;
@@ -600,7 +628,7 @@ sub lvmsnapshot {
 
     debugmsg ('error', "Attempting lvmsnapshot() without successful determie_lvm()", $logfd) if( ! exists $bckpar->{snapdev});
 
-    mkpath "/mnt/vzsnap"; # create mount point for lvm snapshot
+    safe_mkpath "/mnt/vzsnap"; # create mount point for lvm snapshot
 
     if (-b $bckpar->{snapdev}) {
 	debugmsg ('info', "trying to remove stale snapshot '$bckpar->{snapdev}'", $logfd);
@@ -726,7 +754,7 @@ sub freeze_vm {
 sub dump_checkpoint {
     my ($bckpar, $logfd) = @_;
 
-    mkpath $bckpar->{ctrldir};
+    safe_mkpath $bckpar->{ctrldir};
 
     if ($bckpar->{vmtype} eq 'openvz') {
 	debugmsg ('info', "dump state of vps to $bckpar->{ctrldir}/state.bin", $logfd);
@@ -778,19 +806,19 @@ sub flush_ctrl {
 	    run_command ($logfd, "$gzip -9 '$bckpar->{ctrldir}/state.bin'");
 	}
 	if( ! $is_final ){
-	    mkpath $dest;
+	    safe_mkpath $dest;
 	    run_command ($logfd, "$cpcmd -aR $bckpar->{ctrldir}/* $dest");
 	}
     }
 
-    rmtree $bckpar->{ctrldir} unless($is_final);
+    safe_rmtree $bckpar->{ctrldir} unless($is_final);
 }
 
 sub copy_conf {
     my ($dest,$bckpar,$logfd) = @_;
 
     if ($bckpar->{vmtype} eq 'openvz') {
-	mkpath "$dest";
+	safe_mkpath "$dest";
 	run_command ($logfd, "$cpcmd $bckpar->{srcconf} $dest/vps.conf");
 	my $cfgdir = dirname ($bckpar->{srcconf});
 	foreach my $s (@script_ext) {
@@ -934,7 +962,7 @@ sub vm_backup {
     #
 
     lvm_cleanup ($logfd, $bckpar->{snapdev}) if ( exists $bckpar->{snapdev} );
-    rmtree $bckpar->{tmpdir};
+    safe_rmtree $bckpar->{tmpdir};
     rmdir "/mnt/vzsnap" if $opt_snap;
 
     unlink $bckpar->{tmptar} if ( exists $bckpar->{tmptar} );
@@ -1131,7 +1159,7 @@ sub restore_qemu {
     }
 
     eval {
-	mkpath $private || die "unable to create private dir '$private'";
+	safe_mkpath $private || die "unable to create private dir '$private'";
 
 	my $cmd = "zcat -f ${opt_restore}| tar xpf - --totals --sparse -C $private";
 
@@ -1153,7 +1181,7 @@ sub restore_qemu {
     my $err = $@;
 
     if ($err) {
-	rmtree $private;
+	safe_rmtree $private;
 	unlink $conffile;
 	die $err;
     }
@@ -1178,8 +1206,8 @@ sub restore_openvz {
     }
 
     eval {
-	mkpath $private || die "unable to create private dir '$private'";
-	mkpath $root || die "unable to create private dir '$private'";
+	safe_mkpath $private || die "unable to create private dir '$private'";
+	safe_mkpath $root || die "unable to create private dir '$private'";
 
 	my $cmd = "zcat -f ${opt_restore}| tar xpf - --totals --sparse -C $private";
 
@@ -1208,7 +1236,7 @@ sub restore_openvz {
 	    }
 	}
 
-	rmtree "$private/etc/vzdump";
+	safe_rmtree "$private/etc/vzdump";
 
 	debugmsg ('info', "restore successful");
 
@@ -1217,8 +1245,8 @@ sub restore_openvz {
     my $err = $@;
 
     if ($err) {
-	rmtree $private;
-	rmtree $root;
+	safe_rmtree $private;
+	safe_rmtree $root;
 	unlink $conffile;
 	die $err;
     }
@@ -1372,7 +1400,7 @@ my $maxwait = defined ($opt_lockwait) ? $opt_lockwait : $def->{lockwait};
 
 getlock($maxwait); # only one process allowed
 
-mkpath $logdir;
+safe_mkpath $logdir;
 
 eval {
 
