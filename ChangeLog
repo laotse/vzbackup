@@ -1,3 +1,135 @@
+2009-08-10 Dr. Lars Hanke <lars@lhanke.de>
+
+	Fixed locale to C and removed German pattern
+
+
+2009-08-09 Dr. Lars Hanke <lars@lhanke.de>
+
+	Corrected some typos
+
+	* read_glogal_vz_conf() -> read_global_vz_conf()
+	* copy&paste error in restore_openvz()
+
+2009-08-09 Dr. Lars Hanke <lars@lhanke.de>
+
+	Added restore for --no-archive and --sane
+
+	* moved archive type detection into firstfile()
+	  produce the equivalent file from flat copies
+	* moved the 'tar xpf' core into restore_files()
+	  use it in both restore_qemu() and restore_openvz()
+	  add rsync method to support flat copies
+	* moved $tmpdir creation before --restore processing
+	  pass $tmpdir to restore_openvz() - eventually required for state.bin
+	* if /etc/vzdump holds state.bin.gz
+	  move it to $tmpdir
+	  rmtree /etc/vzdump; mkpath /etc/vzdump to get rid of everything else
+	  unpack it to /etc/vzdump
+	  display instructions to resume the machine
+	* updated documentation of --restore
+
+2009-08-09 Dr. Lars Hanke <lars@lhanke.de>
+
+	Added --lvm option
+
+	It is useful to have LVM2 snapshots at hand, even if we decide to stop 
+	the machine in order to have a clean filesystem.
+	--lvm makes this feature independent from the stopmode; actual code 
+	change is a single line in backup_vm()
+
+	Furthermore, some reordering in the help texts in print_usage()
+
+2009-08-09 Dr. Lars Hanke <lars@lhanke.de>
+
+	Patch to mitigate rmtree risks
+
+	Since vzdump runs as root some regex gone awry could yield a 
+	parameter to rmtree, which can wreck your system
+
+	* safe_mkpath fills @safe_paths with the paths actually created by 
+	  vzdump
+	* safe_rmtree removes only trees, which are subtrees of @safe_paths
+	  if existing directories, which are not on @safe_paths shall be 
+	  removed, a warning is logged
+	* at the end of execution @safe_paths holds paths created, but not 
+	  removed 
+	  these exist, for sure, but could also help in consistence checks
+
+	NOTE:
+	The safe_ versions currently take only one path instead of a list and 
+	do not process options. Since there are
+
+2009-08-09 Dr. Lars Hanke <lars@lhanke.de>
+
+	Added a single log message to make me relax watching the tests
+
+
+2009-08-08 Dr. Lars Hanke <lars@lhanke.de>
+
+	Fixed bugs appearing in the LVM process flow
+
+
+2009-08-08 Dr. Lars Hanke <lars@lhanke.de>
+
+	Fixed regex to work in German locale, also
+
+
+2009-08-08 Dr. Lars Hanke <lars@lhanke.de>
+
+	Completely restructured backup core
+
+	This commit is tested in the sandbox, ie. LVM stuff is untested.
+	* Added "use warnings;" for bug hunting
+	* put cstream under check_bin() control
+	* Moved all session variables into $bckpar hash, which is passed by 
+	  reference to all subs
+	  subs will add their information to this hash, too
+	  $bckpar is valid for only one VEID and shall be recreated afterwards
+	  The goal is that all variables except $bckpar and $opt_* are local 
+	  to each sub
+
+	* dissolved snapshot_vm() and archive_vm() into smaller pieces; these 
+	  main functions are gone
+	* established a central flow-control into vm_backup() using 8 disjoint 
+	  phases
+
+	* vm_status() gets the {status} string and sets the {running} flag 
+	  (from snapshot_vm())
+	* determine_lvm() sets {snapdev}, if LVM snapshot is possible or 
+	  reduces {stopmode} to 'suspend', otherwise
+	  This may change, since I intend to offer LVM snapshotting independent
+	  from the stopmode - but that's for later times
+	  All lvm related parameters are only available, if determine_lvm() 
+	  returned true
+	* lvmsnapshot() creates the snapshot device, but does not mount it
+	* mount_snapshot() mounts the latter and returns the directory, where 
+	  it is finally hung
+	* create_archive() creates a tar archive according to the cli options 
+	  from $src -> $archive
+	* rsync_vm() performs all the rsync tasks (first snapshot, final copy, 
+	  archiving from snapdev to directory)
+	* freeze_vm() stops or suspends the machine according to stopmode
+	* resume_vm() resumes following a freeze_vm()
+	* dump_checkpoint() writes the VE state to a file. I don't know, if a 
+	  similar operation is available for qemu deployments
+	* flush_ctrl() {ctrldir} is a temporary directory used if no other 
+	  directory is available at the time;
+	  flush_ctrl() copies these files to their final destination and 
+	  removes this directory
+	  Currently this only applies the VE state file in case of a LVM 
+	  snapshot; its destination directory just does not exist or will 
+	  be overwritten whenthe fiel is produced
+	* copy_conf() copy the configuration files of the node into 
+	  $dest = /etc/vzdump of the image
+
+	TODO:
+	* Testing!
+	* Restore
+
+2009-08-06 Dr. Lars Hanke <lars@lhanke.de>
+
+	Added .gitignore
+
 2009-07-28  Lars Hanke <lars@lhanke.de>
 
 	* vzdump: added option --one-filesystem to support
