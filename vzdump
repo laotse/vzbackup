@@ -86,6 +86,7 @@ openlog ('vzdump', 'cons,pid', 'daemon');
 
 # by default we set --rsyncable for gzip
 $ENV{GZIP} = "--rsyncable" if !$ENV{GZIP};
+$ENV{LANG} = "C"; # avoid locale related issues/warnings
 
 my $debugstattxt = {
     err =>  'ERROR:',
@@ -546,7 +547,7 @@ sub get_lvm_mapping {
     my $cmd = "$lvs --units m --separator ':' --noheadings -o vg_name,lv_name,lv_size";
     if (my $fd = IO::File->new ("$cmd 2>/dev/null|")) {
 	while (my $line = <$fd>) {
-	    if ($line =~ m@^\s*(\S+):(\S+):(\d+((\.|,)\d+))M$@) {
+	    if ($line =~ m|^\s*(\S+):(\S+):(\d+\.\d+)M$|) {
 		my $vg = $1;
 		my $lv = $2;
 		$devmapper->{"/dev/$vg/$lv"} = [$vg, $lv];
