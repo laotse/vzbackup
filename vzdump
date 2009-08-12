@@ -94,7 +94,9 @@ my $debugstattxt = {
     warn => 'WARN:',
 };
 
-# helper functions
+#######################################
+# helper functions 
+#######################################
 
 my @safe_paths = ();
 
@@ -262,6 +264,86 @@ sub remove_quotes {
     return $str;
 }
 
+sub check_bin {
+    my ($bin, $msg)  = @_;
+
+    my $v = $$bin;
+
+    my $path = "/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin";
+
+    foreach my $p (split (/:/, $path)) {
+	my $fn = "$p/$v";
+	if (-x $fn) {
+	    $$bin = $fn;
+	    return;
+	}
+    }
+
+    if ($msg) {
+	die "unable to find '$v' - $msg\n";
+    } else {
+	$$bin = undef;
+    }
+}
+
+sub check_vpsid {
+    my $vpsid = shift;
+
+    if ($vpsid !~ m/^\d\d\d+$/) {
+	print_usage ("strange VPS ID '${vpsid}'");
+	exit (-1);
+    }
+}
+
+sub getlock {
+    my ($maxwait) = @_;
+
+    if (!open (SERVER_FLCK, ">>$lockfile")) {
+	debugmsg ('err', "can't open lock on file '$lockfile' - $!", undef, 1);
+	exit (-1);
+    }
+
+
+    if (flock (SERVER_FLCK, LOCK_EX|LOCK_NB)) {
+	return;
+    }
+
+    if (!$maxwait) {
+	debugmsg ('err', "can't aquire lock '$lockfile' (wait = 0)", undef, 1);
+	exit (-1);
+    }
+
+    debugmsg('info', "trying to get global lock - waiting...", undef, 1);
+
+    eval {
+	alarm ($maxwait * 60);
+
+	local $SIG{ALRM} = sub { alarm (0); die "got timeout\n"; };
+
+	if (!flock (SERVER_FLCK, LOCK_EX)) {
+	    my $err = $!;
+	    close (SERVER_FLCK);
+	    alarm (0);
+	    die "$err\n";
+	}
+	alarm (0);
+    };
+    alarm (0);
+
+    my $err = $@;
+
+    if ($err) {
+	debugmsg ('err', "can't aquire lock '$lockfile' - $err", undef, 1);
+	exit (-1);
+    }
+
+    debugmsg('info', "got global lock", undef, 1);
+}
+
+#######################################
+# Configuration parsing
+#######################################
+
 sub read_vzdump_defaults {
 
     my $fn = "/etc/vzdump.conf";
@@ -410,135 +492,9 @@ sub read_qm_list {
     }
 }
 
-my @findexcl;
-
-sub find_add_exclude {
-    my ($excltype, $value) = @_;
-
-    if (($excltype eq '-regex') || ($excltype eq '-files')) {
-	$value = "\.$value";
-    }
-
-    if ($excltype eq '-files') {
-	push @findexcl, "'('", '-not', '-type', 'd', '-regex' , "'$value'", "')'", '-o';
-
-    } else {
-	push @findexcl, "'('", $excltype , "'$value'", '-prune', "')'", '-o';
-    }
-}
-
-find_add_exclude ('-type', 's'); # skip sockets
-
-# argument parsing
-
-sub print_usage {
-    my $msg = shift;
-
-    print STDERR "ERROR: $msg\n\n" if $msg;
-
-    print STDERR "usage: $0 OPTIONS [--all | VPSID]\n\n";
-    print STDERR "\t--exclude VPSID\t\texclude VPSID (assumes --all)\n";
-    print STDERR "\t--exclude-path REGEX\texclude certain files/directories\n";     print STDERR "\t--stdexcludes\t\texclude temorary files and logs\n";
-    print STDERR "\t--one-filesystem\tdo not recurse directories across file system\n\t\t\t\tborders\n\n";
-    print STDERR "\t--compress\t\tcompress dump file (gzip)\n";
-    print STDERR "\t--no-archive\t\tjust copy files, do not create an archive\n";
-    print STDERR "\t--dumpdir DIR\t\tstore resulting files in DIR\n";
-    print STDERR "\t--tmpdir DIR\t\tstore temporary files in DIR\n";
-    print STDERR "\t--lvm\t\t\tuse LVM2 snapshot feature, if available\n";
-    print STDERR "\t--size MB\t\tLVM snapshot size\n";
-
-    print STDERR "\t--mailto EMAIL\t\tsend notification mail to EMAIL.\n";
-    print STDERR "\t--quiet\t\t\tbe quiet.\n\n";
-    print STDERR "\t--stop\t\t\tstop/start VPS if running\n";
-    print STDERR "\t--suspend\t\tsuspend/resume VPS when running\n";
-    print STDERR "\t--snapshot\t\tsnapshot life VM, implies --lvm\n";
-    print STDERR "\t--sane\t\t\tuses checkpointing with snapshot to store the\n\t\t\t\tfull state of the machine. It includes the\n\t\t\t\tcheckpointing dump file.\n\n";
-
-    print STDERR "\t--node CID\t\tonly run on pve cluster node CID\n";
-    print STDERR "\t--lockwait MINUTES\tmaximal time to wait for the global lock\n";
-    print STDERR "\t--stopwait MINUTES\tmaximal time to wait until a VM is stopped\n";
-    print STDERR "\t--bwlimit KBPS\t\tlimit I/O bandwidth; KBytes per second\n\n";
-
-    print STDERR "\t--restore FILENAME\trestore FILENAME\n";
-
-    print STDERR "\n";
-}
-
-sub check_bin {
-    my ($bin, $msg)  = @_;
-
-    my $v = $$bin;
-
-    my $path = "/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin";
-
-    foreach my $p (split (/:/, $path)) {
-	my $fn = "$p/$v";
-	if (-x $fn) {
-	    $$bin = $fn;
-	    return;
-	}
-    }
-
-    if ($msg) {
-	die "unable to find '$v' - $msg\n";
-    } else {
-	$$bin = undef;
-    }
-}
-
-sub check_vpsid {
-    my $vpsid = shift;
-
-    if ($vpsid !~ m/^\d\d\d+$/) {
-	print_usage ("strange VPS ID '${vpsid}'");
-	exit (-1);
-    }
-}
-
-sub getlock {
-    my ($maxwait) = @_;
-
-    if (!open (SERVER_FLCK, ">>$lockfile")) {
-	debugmsg ('err', "can't open lock on file '$lockfile' - $!", undef, 1);
-	exit (-1);
-    }
-
-
-    if (flock (SERVER_FLCK, LOCK_EX|LOCK_NB)) {
-	return;
-    }
-
-    if (!$maxwait) {
-	debugmsg ('err', "can't aquire lock '$lockfile' (wait = 0)", undef, 1);
-	exit (-1);
-    }
-
-    debugmsg('info', "trying to get global lock - waiting...", undef, 1);
-
-    eval {
-	alarm ($maxwait * 60);
-
-	local $SIG{ALRM} = sub { alarm (0); die "got timeout\n"; };
-
-	if (!flock (SERVER_FLCK, LOCK_EX)) {
-	    my $err = $!;
-	    close (SERVER_FLCK);
-	    alarm (0);
-	    die "$err\n";
-	}
-	alarm (0);
-    };
-    alarm (0);
-
-    my $err = $@;
-
-    if ($err) {
-	debugmsg ('err', "can't aquire lock '$lockfile' - $err", undef, 1);
-	exit (-1);
-    }
-
-    debugmsg('info', "got global lock", undef, 1);
-}
+#######################################
+# LVM utilities
+#######################################
 
 sub get_lvm_mapping {
 
@@ -667,29 +623,9 @@ sub mount_snapshot {
     return $snapdir;
 }
 
-sub create_archive {
-    my ($src, $archive, $bckpar, $logfd) = @_;
-
-    my $zflag = $opt_compress ? 'z' : '';
-    my $bwl = $opt_bwlimit*1024; # bandwidth limit for cstream
-
-    if ($opt_stdexcludes) {
-	find_add_exclude ('-files', '/var/log/.+');
-	find_add_exclude ('-regex', '/tmp/.+');
-	find_add_exclude ('-regex', '/var/tmp/.+');
-	find_add_exclude ('-regex', '/var/run/.+pid');
-    }
-
-    # backup all types except sockets
-    my $findargs = join (' ', @findexcl) . ' -print0';
-    if( $opt_filesys ){
-	$findargs = "-xdev " . $findargs;
-    }
-
-    debugmsg ('info', "creating temporary archive '$archive'", $logfd);
-    my $cmd = "(cd $src; find . $findargs|tar c${zflag}pf - --totals --sparse --numeric-owner --no-recursion --ignore-failed-read --null -T -| $cstream -t $bwl >$archive)";
-    run_command ($logfd, $cmd);
-}
+#######################################
+# VM maintenance and status
+#######################################
 
 sub vm_status {
     my ($bckpar,$logfd) = @_;
@@ -791,6 +727,53 @@ sub resume_vm {
     }
 }
 
+#######################################
+# Create and compile archive 
+#######################################
+
+my @findexcl;
+
+sub find_add_exclude {
+    my ($excltype, $value) = @_;
+
+    if (($excltype eq '-regex') || ($excltype eq '-files')) {
+	$value = "\.$value";
+    }
+
+    if ($excltype eq '-files') {
+	push @findexcl, "'('", '-not', '-type', 'd', '-regex' , "'$value'", "')'", '-o';
+
+    } else {
+	push @findexcl, "'('", $excltype , "'$value'", '-prune', "')'", '-o';
+    }
+}
+
+find_add_exclude ('-type', 's'); # skip sockets
+
+sub create_archive {
+    my ($src, $archive, $bckpar, $logfd) = @_;
+
+    my $zflag = $opt_compress ? 'z' : '';
+    my $bwl = $opt_bwlimit*1024; # bandwidth limit for cstream
+
+    if ($opt_stdexcludes) {
+	find_add_exclude ('-files', '/var/log/.+');
+	find_add_exclude ('-regex', '/tmp/.+');
+	find_add_exclude ('-regex', '/var/tmp/.+');
+	find_add_exclude ('-regex', '/var/run/.+pid');
+    }
+
+    # backup all types except sockets
+    my $findargs = join (' ', @findexcl) . ' -print0';
+    if( $opt_filesys ){
+	$findargs = "-xdev " . $findargs;
+    }
+
+    debugmsg ('info', "creating temporary archive '$archive'", $logfd);
+    my $cmd = "(cd $src; find . $findargs|tar c${zflag}pf - --totals --sparse --numeric-owner --no-recursion --ignore-failed-read --null -T -| $cstream -t $bwl >$archive)";
+    run_command ($logfd, $cmd);
+}
+
 sub flush_ctrl {
     my ($dest, $bckpar, $logfd) = @_;
 
@@ -834,6 +817,10 @@ sub copy_conf {
 	run_command ($logfd, "$cpcmd $bckpar->{srcconf} $dest/qemu-server.conf");
     }
 }
+
+#######################################
+# Core state machine
+#######################################
 
 # This is only a debugging helper -- not called in the production version
 sub dump_bckpar {
@@ -975,6 +962,10 @@ sub vm_backup {
 
     return $size;
 }
+
+#######################################
+# E-Mail handling
+#######################################
 
 sub encode8bit {
     my ($str) = @_;
@@ -1150,6 +1141,10 @@ sub send_mail {
     print MAIL "\n--$boundary--\n";
 }
 
+#######################################
+# Restore
+#######################################
+
 sub firstfile {
     my $src = shift;
 
@@ -1308,6 +1303,47 @@ sub restore_openvz {
     }
 }
 
+
+#######################################
+# argument parsing
+#######################################
+
+sub print_usage {
+    my $msg = shift;
+
+    print STDERR "ERROR: $msg\n\n" if $msg;
+
+    print STDERR "usage: $0 OPTIONS [--all | VPSID]\n\n";
+    print STDERR "\t--exclude VPSID\t\texclude VPSID (assumes --all)\n";
+    print STDERR "\t--exclude-path REGEX\texclude certain files/directories\n";     print STDERR "\t--stdexcludes\t\texclude temorary files and logs\n";
+    print STDERR "\t--one-filesystem\tdo not recurse directories across file system\n\t\t\t\tborders\n\n";
+    print STDERR "\t--compress\t\tcompress dump file (gzip)\n";
+    print STDERR "\t--no-archive\t\tjust copy files, do not create an archive\n";
+    print STDERR "\t--dumpdir DIR\t\tstore resulting files in DIR\n";
+    print STDERR "\t--tmpdir DIR\t\tstore temporary files in DIR\n";
+    print STDERR "\t--lvm\t\t\tuse LVM2 snapshot feature, if available\n";
+    print STDERR "\t--size MB\t\tLVM snapshot size\n";
+
+    print STDERR "\t--mailto EMAIL\t\tsend notification mail to EMAIL.\n";
+    print STDERR "\t--quiet\t\t\tbe quiet.\n\n";
+    print STDERR "\t--stop\t\t\tstop/start VPS if running\n";
+    print STDERR "\t--suspend\t\tsuspend/resume VPS when running\n";
+    print STDERR "\t--snapshot\t\tsnapshot life VM, implies --lvm\n";
+    print STDERR "\t--sane\t\t\tuses checkpointing with snapshot to store the\n\t\t\t\tfull state of the machine. It includes the\n\t\t\t\tcheckpointing dump file.\n\n";
+
+    print STDERR "\t--node CID\t\tonly run on pve cluster node CID\n";
+    print STDERR "\t--lockwait MINUTES\tmaximal time to wait for the global lock\n";
+    print STDERR "\t--stopwait MINUTES\tmaximal time to wait until a VM is stopped\n";
+    print STDERR "\t--bwlimit KBPS\t\tlimit I/O bandwidth; KBytes per second\n\n";
+
+    print STDERR "\t--restore FILENAME\trestore FILENAME\n";
+
+    print STDERR "\n";
+}
+
+#######################################
+# Main code
+#######################################
 
 # parse parameters first - write errors to STDERR
 
