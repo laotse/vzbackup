@@ -18,21 +18,24 @@
 #    Free Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston,
 #    MA 02110-1301, USA.
 #
-#    Author: Dietmar Maurer <dietmar@proxmox.com>
+#    Author: Dietmar Maurer <dietmar@proxmox.com>,
+#            Lars Hanke <lars@lhanke.de>
 #
 
 use strict;
 use warnings;
 use Getopt::Long;
-use Fcntl ':flock';
+use Fcntl qw( :flock :mode );
 use Sys::Syslog;
 use File::Path;
 use File::Basename;
 use File::Spec;
+use File::stat;
 use IO::File;
 use IO::Select;
 use IPC::Open3;
 use POSIX qw(strftime);
+use Storable qw(dclone);
 
 my $opt_all;
 my $opt_exclude;
@@ -56,6 +59,7 @@ my $opt_noarch = 0;
 my $opt_sane = 0;
 my $opt_filesys = 0;
 my $opt_lvm = 0;
+my $opt_plugin;
 
 my $stopmode = '';
 
@@ -94,8 +98,10 @@ my $debugstattxt = {
     warn => 'WARN:',
 };
 
+my $plugs;
+
 #######################################
-# helper functions 
+# helper functions
 #######################################
 
 my @safe_paths = ();
@@ -340,6 +346,31 @@ sub getlock {
     debugmsg('info', "got global lock", undef, 1);
 }
 
+sub check_perm {
+    my ($file, $perm) = @_;
+
+    my $fb = stat(__FILE__);
+    my $sb = stat($file);
+    die "File $file has insecure owner"
+	unless(($sb->uid == $fb->uid) || ($sb->uid == 0));
+    die "File $file has insecure group"
+	unless(($sb->gid == $fb->gid) || ($sb->gid == 0));
+
+    my $type = $sb->mode & (S_IFDIR | S_IFREG);
+    die "File $file is neither a directory nor a regular file!"
+        unless(($type == S_IFDIR) || ($type == S_IFREG));
+
+    my $mode = $sb->mode & 07777;
+    if ($type == S_IFDIR){
+        die "Directory mode of $file is unsafe!"
+            unless (($mode | $perm) == $perm);
+    } else {
+	die "File mode of $file is unsafe!"
+	    unless (($mode | $perm) == $perm);
+    }
+}
+
+
 #######################################
 # Configuration parsing
 #######################################
@@ -354,6 +385,7 @@ sub read_vzdump_defaults {
 	size => 1024,
 	lockwait => 3*60, # 3 hours
 	stopwait => 10, # 10 minutes
+	plugpath => File::Spec->rel2abs('.'),
     };
 
     my $fh = IO::File->new ("<$fn");
@@ -378,6 +410,14 @@ sub read_vzdump_defaults {
 	    $res->{size} = int($1);
 	} elsif ($line =~ m/mode:\s*(stop|snapshot|suspend)\s*$/) {
 	    $res->{mode} = $1;
+	} elsif ($line =~ m/pluginpath:\s*([^\s]+|\".*\"|\'.*\')\s*$/) {
+	    $res->{plugpath} = $1;
+	    $res->{plugpath} =~ s/^\"(.*)\"$/$1/;
+	    $res->{plugpath} =~ s/^\'(.*)\'$/$1/;
+	    $res->{plugpath} = File::Spec->canonpath($res->{plugpath});
+	    $res->{plugpath} = File::Spec->rel2abs($res->{plugpath});
+	    die "Plugin directory $res->{plugpath} does not exist!"
+		unless( -d "$res->{plugpath}" );
 	} else {
 	    debugmsg ('warn', "unable to parse configuration file '$fn' - error at line " . $., undef, 1);
 	}
@@ -728,7 +768,7 @@ sub resume_vm {
 }
 
 #######################################
-# Create and compile archive 
+# Create and compile archive
 #######################################
 
 my @findexcl;
@@ -871,12 +911,16 @@ sub vm_backup {
 		$bckpar->{ctrldir} = "$bckpar->{tmpdir}/ctrl";
 	    }
 	}
+	my $res = run_plugins($plugs,'prepare',$logfd,$bckpar);
+	die "Plugin failure in $res->prepare()" if(defined($res));
 	#
 	# Phase 2: pre-snapshot rsync
 	#
 	if((! $bckpar->{use_lvm} ) && ($bckpar->{running})){
 	    rsync_vm($bckpar->{dir},$bckpar->{snapdir},"first",$bckpar,$logfd);
 	}
+	$res = run_plugins($plugs,'snapshot',$logfd,$bckpar);
+	die "Plugin failure in $res->snapshot()" if(defined($res));
 	#
 	# Phase 3: freeze machine
 	#
@@ -897,6 +941,7 @@ sub vm_backup {
 	if ( $bckpar->{dump_checkpoint} ){
 	    dump_checkpoint($bckpar,$logfd);
 	}
+	$res = run_plugins($plugs,'frozen',$logfd,$bckpar);
 	#
 	# Phase 5: unfreeze machine
 	#
@@ -906,6 +951,7 @@ sub vm_backup {
 	    my $delay = time () - $bckpar->{stoptime};
 	    debugmsg ('info', "vps is online again after $delay seconds", $logfd);
 	}
+	die "Plugin failure in $res->frozen()" if(defined($res));
 	#
 	# Phase 6: assemble archive image
 	#
@@ -921,6 +967,8 @@ sub vm_backup {
 	}
 	flush_ctrl($dest,$bckpar,$logfd) if( exists $bckpar->{ctrldir} );
 	copy_conf($dest,$bckpar,$logfd);
+	$res = run_plugins($plugs,'assemble',$logfd,$bckpar);
+	die "Plugin failure in $res->assemble()" if(defined($res));
 	$dest =~ s+/etc/vzdump$++;
 	#
 	# Phase 7: produce archive and determine size
@@ -1330,6 +1378,7 @@ sub print_usage {
     print STDERR "\t--suspend\t\tsuspend/resume VPS when running\n";
     print STDERR "\t--snapshot\t\tsnapshot life VM, implies --lvm\n";
     print STDERR "\t--sane\t\t\tuses checkpointing with snapshot to store the\n\t\t\t\tfull state of the machine. It includes the\n\t\t\t\tcheckpointing dump file.\n\n";
+    print STDERR "\t--plugin PLUGIN[:args]\tuse PLUGIN for additional state handling and\n\t\t\t\tpass options to the PLUGIN\n\n";
 
     print STDERR "\t--node CID\t\tonly run on pve cluster node CID\n";
     print STDERR "\t--lockwait MINUTES\tmaximal time to wait for the global lock\n";
@@ -1340,6 +1389,79 @@ sub print_usage {
 
     print STDERR "\n";
 }
+
+sub check_module {
+    my ($res,$module) = @_;
+
+    # This line already loads the module
+    # so be careful
+    eval "local \$^W = 0; require $module";
+    die "$module cannot be loaded: $@" if($@);
+    my $spath = $module;
+    $spath =~ s(::)(/)g;
+    $spath =~ s/$/.pm/;
+    die "$module path unavailabe in %INC!"
+        unless(defined(my $fullpath = $INC{$spath}));
+
+    check_perm($fullpath,0644);
+    my $moddir = $fullpath;
+    $moddir =~ s/$spath$//;
+    return if("$res->{plugpath}/" eq "$moddir");
+
+    die "Loaded module $module from invalid path $res->{plugpath}!\n";
+}
+
+sub load_plugins {
+    my ($res) = @_;
+
+    my @plugs;
+    unshift @INC, "$res->{plugpath}";
+    foreach my $p (@$opt_plugin){
+	if( ! ($p =~ /^(\w+)\s*(:\s*(.*\S)\s*)?$/)){
+	    die "Illegal format of plugin option";
+	}
+	my $name = $1;
+	my @topt = (defined($3))? split(/\s*,\s*/,$3) : ();
+	my %popt;
+	foreach my $o (@topt){
+	    if( ! ($o =~ /^(\w+)\s*(=\s*(.*\S)\s*)?$/)){
+		die "Invalid option for plugin: $name";
+	    }
+	    my $on = $1;
+	    my $oa = $3;
+	    $popt{$on} = $oa;
+	}
+	check_module($res,$name);
+	eval {
+	    push @plugs, $name->new($name,\%popt);
+	    die "Module does not identitfy!" unless ($plugs[$#plugs]->id() eq "$name");
+	};
+	my $err = $@;
+	if($err){
+	    debugmsg('error', "Loading of $name plugin failed!");
+	    die $err;
+	}
+    }
+    return \@plugs;
+}
+
+sub run_plugins {
+    my ($plugs, $meth, @args) = @_;
+
+    foreach my $p (@$plugs){
+	my $res = 0;
+	my $par = dclone(\@args);
+	eval {
+	    $res = $p->$meth(@$par);
+	};
+	my $err = $@;
+	if(($res == 0) || ($err)){
+	    return $p->{name};
+	}
+    }
+    return;
+}
+
 
 #######################################
 # Main code
@@ -1354,6 +1476,7 @@ if (!GetOptions ('all' => \$opt_all,
 		 'compress' => \$opt_compress,
 		 'restore=s' => \$opt_restore,
 		 'mailto=s@' => \$opt_mailto,
+		 'plugin=s@' => \$opt_plugin,
 		 'quiet' => \$opt_quiet,
 		 'stop' =>\$opt_stop,
 		 'suspend' =>\$opt_suspend,
@@ -1453,6 +1576,9 @@ if ($opt_noarch) {
 }
 
 my $def = read_vzdump_defaults();
+
+$plugs = load_plugins($def);
+run_plugins($plugs,'debug',"Hallo Welt");
 
 my $tmpdir = "/var/tmp";
 $tmpdir = $def->{tmpdir} if defined ($def->{tmpdir});
@@ -1691,6 +1817,11 @@ vzdump OPTIONS [--all | <VMID>]
                         using an LVM snapshot.
 
 --size MB               LVM snapshot size (default 1024)
+
+--plugin PLUGIN[:args]  load the PLUGIN and pass args to it. Arguments
+                        are delivered as a colon separated list of
+                        'option' or 'option=value' entries. For
+                        documentation of plugins, refer to the plugins.
 
 --bwlimit KBPS          limit I/O bandwidth; KBytes per second
 
