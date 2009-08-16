@@ -37,29 +37,30 @@ use IPC::Open3;
 use POSIX qw(strftime);
 use Storable qw(dclone);
 
-my $opt_all;
-my $opt_exclude;
-my $opt_exclude_path;
-my $opt_quiet;
-my $opt_dumpdir;
-my $opt_compress = 0;
-my $opt_restore;
-my $opt_mailto;
-my $opt_stop;
-my $opt_suspend;
-my $opt_snap;
-my $opt_node;
-my $opt_tmpdir;
-my $opt_bwlimit;
-my $opt_lockwait;
-my $opt_stopwait;
-my $opt_snapsize;
-my $opt_stdexcludes;
-my $opt_noarch = 0;
-my $opt_sane = 0;
-my $opt_filesys = 0;
-my $opt_lvm = 0;
-my $opt_plugin;
+my %OPT;
+#$OPT{all};
+#$OPT{exclude};
+#$OPT{exclude_path};
+#$OPT{quiet};
+#$OPT{dumpdir};
+$OPT{compress} = 0;
+#$OPT{restore};
+#$OPT{mailto};
+#$OPT{stop};
+#$OPT{suspend};
+#$OPT{snap};
+#$OPT{node};
+#$OPT{tmpdir};
+#$OPT{bwlimit};
+#$OPT{lockwait};
+#$OPT{stopwait};
+#$OPT{snapsize};
+#$OPT{stdexcludes};
+$OPT{noarch} = 0;
+$OPT{sane} = 0;
+$OPT{filesys} = 0;
+$OPT{lvm} = 0;
+#$OPT{plugin};
 
 my $stopmode = '';
 
@@ -145,7 +146,7 @@ sub debugmsg {
     syslog ($mtype eq 'info' ? 'info' : 'err', $msg) if $syslog;
 
     foreach my $line (split (/\n/, $msg)) {
-	print "$pre $line\n" if !$opt_quiet;
+	print "$pre $line\n" if !$OPT{quiet};
 	print $logfd "$tstr $pre $line\n" if $logfd;
     }
 }
@@ -635,7 +636,7 @@ sub lvmsnapshot {
     }
 
     debugmsg ('info', "creating lvm snapshot of $bckpar->{srcdev} ('$bckpar->{snapdev}')", $logfd);
-    run_command ($logfd, "$lvcreate --size ${opt_snapsize}M --snapshot" .
+    run_command ($logfd, "$lvcreate --size ${OPT{snapsize}}M --snapshot" .
 			 " --name vzsnap /dev/$bckpar->{lvmvg}/$bckpar->{lvmlv}");
 
 }
@@ -691,8 +692,8 @@ sub rsync_vm {
     debugmsg ('info', "starting $text sync $from to $to", $logfd);
     my $starttime = time();
 
-    my $rsyncopts = "--stats --numeric-ids --bwlimit=${opt_bwlimit}";
-    if( $opt_filesys ){
+    my $rsyncopts = "--stats --numeric-ids --bwlimit=${OPT{bwlimit}}";
+    if( $OPT{filesys} ){
 	$rsyncopts .= " -x";
     }
 
@@ -713,7 +714,7 @@ sub freeze_vm {
 	if ($bckpar->{vmtype} eq 'openvz') {
 	    run_command ($logfd, "$vzctl stop $bckpar->{vpsid}");
 	} else {
-	    my $wait = $opt_stopwait * 60;
+	    my $wait = $OPT{stopwait} * 60;
 	    # send shutdown and wait
 	    run_command ($logfd, "qm shutdown $bckpar->{vpsid} && qm wait $bckpar->{vpsid} $wait");
 	}
@@ -793,10 +794,10 @@ find_add_exclude ('-type', 's'); # skip sockets
 sub create_archive {
     my ($src, $archive, $bckpar, $logfd) = @_;
 
-    my $zflag = $opt_compress ? 'z' : '';
-    my $bwl = $opt_bwlimit*1024; # bandwidth limit for cstream
+    my $zflag = $OPT{compress} ? 'z' : '';
+    my $bwl = $OPT{bwlimit}*1024; # bandwidth limit for cstream
 
-    if ($opt_stdexcludes) {
+    if ($OPT{stdexcludes}) {
 	find_add_exclude ('-files', '/var/log/.+');
 	find_add_exclude ('-regex', '/tmp/.+');
 	find_add_exclude ('-regex', '/var/tmp/.+');
@@ -805,7 +806,7 @@ sub create_archive {
 
     # backup all types except sockets
     my $findargs = join (' ', @findexcl) . ' -print0';
-    if( $opt_filesys ){
+    if( $OPT{filesys} ){
 	$findargs = "-xdev " . $findargs;
     }
 
@@ -885,18 +886,18 @@ sub vm_backup {
 	#
 	# whether we use rsync or LVM snapshot
 	$bckpar->{use_lvm} = ($bckpar->{stopmode} eq 'snapshot')? 1 : 0;
-	$bckpar->{use_lvm} = 1 if( $opt_lvm );
+	$bckpar->{use_lvm} = 1 if( $OPT{lvm} );
 	$bckpar->{use_lvm} = determine_lvm($bckpar,$logfd)
 	    if ($bckpar->{use_lvm});
 	# whether we shall produce a VE state file
 	$bckpar->{dump_checkpoint} = 0;
 	vm_status($bckpar);
-	if ( $bckpar->{running} && $opt_sane){
+	if ( $bckpar->{running} && $OPT{sane}){
 	    $bckpar->{stopmode} = 'suspend' if($bckpar->{use_lvm});
 	    $bckpar->{dump_checkpoint} = 1 if($bckpar->{stopmode} eq 'suspend');
 	}
 	# we will copy from dir - [snapdir] - dumpdir
-	$bckpar->{snapdir} = ($opt_noarch)? $bckpar->{dumpdir} : $bckpar->{tmpdir};
+	$bckpar->{snapdir} = ($OPT{noarch})? $bckpar->{dumpdir} : $bckpar->{tmpdir};
 	# since we do rsync /my/src/path /my/dst, the base will be /my/dst/path!
 	my $subdir = $bckpar->{dir};
 	$subdir =~ s+^.*/+/+;
@@ -958,7 +959,7 @@ sub vm_backup {
 	my $dest = "$bckpar->{dstdir}/etc/vzdump";
 	if( $bckpar->{use_lvm} ){
 	    $bckpar->{lvmsnap} = mount_snapshot($bckpar,$logfd);
-	    if( $opt_noarch ){
+	    if( $OPT{noarch} ){
 		# files cannot stay here
 		rsync_vm($bckpar->{lvmsnap},$bckpar->{snapdir},"archiving",$bckpar,$logfd);
 	    } else {
@@ -973,7 +974,7 @@ sub vm_backup {
 	#
 	# Phase 7: produce archive and determine size
 	#
-	if(! $opt_noarch ){
+	if(! $OPT{noarch} ){
 	    $bckpar->{tmptar} = $bckpar->{tarfile};
 	    $bckpar->{tmptar} =~ s/\.[^\.]+$/\.dat/;
 	    unlink $bckpar->{tmptar};
@@ -1002,7 +1003,7 @@ sub vm_backup {
 
     lvm_cleanup ($logfd, $bckpar->{snapdev}) if ( exists $bckpar->{snapdev} );
     safe_rmtree $bckpar->{tmpdir};
-    rmdir "/mnt/vzsnap" if $opt_snap;
+    rmdir "/mnt/vzsnap" if $OPT{snap};
 
     unlink $bckpar->{tmptar} if ( exists $bckpar->{tmptar} );
 
@@ -1226,7 +1227,7 @@ sub restore_files {
     my $cmd = "";
     if( -d $src ){
 	$src =~ s@/*$@@;
-	my $rsyncopts = "--stats --numeric-ids --bwlimit=${opt_bwlimit}";
+	my $rsyncopts = "--stats --numeric-ids --bwlimit=${OPT{bwlimit}}";
 	$cmd = "$rsync $rsyncopts -aH --delete --no-whole-file --inplace ${src}/ $dest";
 	debugmsg ('info', "copy files from '${src}'");
     } else {
@@ -1238,9 +1239,9 @@ sub restore_files {
 }
 
 sub restore_qemu {
-    my ($opt_restore, $vpsid) = @_;
+    my ($src, $vpsid) = @_;
 
-    debugmsg ('info', "restore qemu-server image '${opt_restore}' using ID $vpsid");
+    debugmsg ('info', "restore qemu-server image '${OPT{restore}}' using ID $vpsid");
 
     my $conffile = "/etc/qemu-server/${vpsid}.conf";
     my $private = "/var/lib/vz/images/$vpsid";
@@ -1252,7 +1253,7 @@ sub restore_qemu {
     eval {
 	safe_mkpath $private || die "unable to create private dir '$private'";
 
-	restore_files( $opt_restore, $private );
+	restore_files( $src, $private );
 
 	debugmsg ('info', "extracting configuration to '$conffile'");
 
@@ -1275,9 +1276,9 @@ sub restore_qemu {
 }
 
 sub restore_openvz {
-    my ($opt_restore, $vpsid, $tmpdir) = @_;
+    my ($src, $vpsid, $tmpdir) = @_;
 
-    debugmsg ('info', "restore openvz image '${opt_restore}' using ID $vpsid");
+    debugmsg ('info', "restore openvz image '${OPT{restore}}' using ID $vpsid");
 
     my $vzconf = read_global_vz_config ();
     my $cfgdir = "$vzdir/conf";
@@ -1296,7 +1297,7 @@ sub restore_openvz {
 	safe_mkpath $private || die "unable to create private dir '$private'";
 	safe_mkpath $root || die "unable to create root dir '$root'";
 
-	restore_files( $opt_restore, $private );
+	restore_files( $src, $private );
 
 	debugmsg ('info', "extracting configuration to '$conffile'");
 
@@ -1416,7 +1417,7 @@ sub load_plugins {
 
     my @plugs;
     unshift @INC, "$res->{plugpath}";
-    foreach my $p (@$opt_plugin){
+    foreach my $p (@{$OPT{plugin}}){
 	if( ! ($p =~ /^(\w+)\s*(:\s*(.*\S)\s*)?$/)){
 	    die "Illegal format of plugin option";
 	}
@@ -1432,8 +1433,9 @@ sub load_plugins {
 	    $popt{$on} = $oa;
 	}
 	check_module($res,$name);
+	my $vzopt = dclone(\%OPT);
 	eval {
-	    push @plugs, $name->new($name,\%popt);
+	    push @plugs, $name->new($name,\%popt,$vzopt);
 	    die "Module does not identitfy!" unless ($plugs[$#plugs]->id() eq "$name");
 	};
 	my $err = $@;
@@ -1469,38 +1471,38 @@ sub run_plugins {
 
 # parse parameters first - write errors to STDERR
 
-if (!GetOptions ('all' => \$opt_all,
-		 'exclude=s@' => \$opt_exclude,
-		 'exclude-path=s@' => \$opt_exclude_path,
-		 'stdexcludes' => \$opt_stdexcludes,
-		 'compress' => \$opt_compress,
-		 'restore=s' => \$opt_restore,
-		 'mailto=s@' => \$opt_mailto,
-		 'plugin=s@' => \$opt_plugin,
-		 'quiet' => \$opt_quiet,
-		 'stop' =>\$opt_stop,
-		 'suspend' =>\$opt_suspend,
-		 'snapshot' =>\$opt_snap,
-		 'sane' => \$opt_sane,
-		 'no-archive' => \$opt_noarch,
-		 'one-filesystem' => \$opt_filesys,
-		 'lvm' => \$opt_lvm,
-		 'size=i' => \$opt_snapsize,
-		 'node=i' => \$opt_node,
-		 'bwlimit=i' => \$opt_bwlimit,
-		 'lockwait=i' => \$opt_lockwait,
-		 'stopwait=i' => \$opt_stopwait,
-		 'tmpdir=s' => \$opt_tmpdir,
-		 'dumpdir=s' => \$opt_dumpdir)) {
+if (!GetOptions ('all' => \$OPT{all},
+		 'exclude=s@' => \$OPT{exclude},
+		 'exclude-path=s@' => \$OPT{exclude_path},
+		 'stdexcludes' => \$OPT{stdexcludes},
+		 'compress' => \$OPT{compress},
+		 'restore=s' => \$OPT{restore},
+		 'mailto=s@' => \$OPT{mailto},
+		 'plugin=s@' => \$OPT{plugin},
+		 'quiet' => \$OPT{quiet},
+		 'stop' =>\$OPT{stop},
+		 'suspend' =>\$OPT{suspend},
+		 'snapshot' =>\$OPT{snap},
+		 'sane' => \$OPT{sane},
+		 'no-archive' => \$OPT{noarch},
+		 'one-filesystem' => \$OPT{filesys},
+		 'lvm' => \$OPT{lvm},
+		 'size=i' => \$OPT{snapsize},
+		 'node=i' => \$OPT{node},
+		 'bwlimit=i' => \$OPT{bwlimit},
+		 'lockwait=i' => \$OPT{lockwait},
+		 'stopwait=i' => \$OPT{stopwait},
+		 'tmpdir=s' => \$OPT{tmpdir},
+		 'dumpdir=s' => \$OPT{dumpdir})) {
     print_usage ();
     exit (-1);
 }
 
-$opt_dumpdir =~ s|/+$|| if ($opt_dumpdir);
-$opt_tmpdir =~ s|/+$|| if ($opt_tmpdir);
+$OPT{dumpdir} =~ s|/+$|| if ($OPT{dumpdir});
+$OPT{tmpdir} =~ s|/+$|| if ($OPT{tmpdir});
 
 
-if ($opt_node) {
+if ($OPT{node}) {
     check_bin (\$pveca, "pveca not installed?");
 
     my $info = `$pveca -i`;
@@ -1509,49 +1511,47 @@ if ($opt_node) {
     my $cid = $1;
 
     # silent exit if we run on wrong node
-    exit (0) if $cid != $opt_node;
+    exit (0) if $cid != $OPT{node};
 }
 
-$opt_all = 1 if $opt_exclude;
+$OPT{all} = 1 if $OPT{exclude};
 
-if ($opt_all && ($#ARGV >= 0 || $opt_restore)) {
+if ($OPT{all} && ($#ARGV >= 0 || $OPT{restore})) {
     print_usage ();
     exit (-1);
 }
 
-if (!$opt_all && $#ARGV == -1) {
+if (!$OPT{all} && $#ARGV == -1) {
     print_usage ();
     exit (-1);
 }
 
-if ($opt_restore && $#ARGV != 0) {
+if ($OPT{restore} && $#ARGV != 0) {
     print_usage ();
     exit (-1);
 }
 
-if ($opt_restore && !(( -f $opt_restore) || ( -d $opt_restore))) {
-    print_usage ("unable to access file '${opt_restore}'");
+if ($OPT{restore} && !(( -f $OPT{restore}) || ( -d $OPT{restore}))) {
+    print_usage ("unable to access file '${OPT{restore}}'");
     exit (-1);
 }
 
-my @opt_vpsids;
+if (!$OPT{all}) {
+    $OPT{vpsids} = [ @ARGV ];
 
-if (!$opt_all) {
-    @opt_vpsids = @ARGV;
-
-    foreach my $vpsid (@opt_vpsids) {
+    foreach my $vpsid (@{$OPT{vpsids}}) {
 	check_vpsid ($vpsid);
     }
 }
 
-if ($opt_exclude) {
-    foreach my $vpsid (@$opt_exclude) {
+if ($OPT{exclude}) {
+    foreach my $vpsid (@{$OPT{exclude}}) {
 	check_vpsid ($vpsid);
     }
 }
 
-if ($opt_exclude_path) {
-    foreach my $path (@$opt_exclude_path) {
+if ($OPT{exclude_path}) {
+    foreach my $path (@{$OPT{exclude_path}}) {
 	find_add_exclude ('-regex', $path);
     }
 }
@@ -1563,13 +1563,13 @@ check_bin (\$sendmail, "sendmail not installed?");
 check_bin (\$rsync, "rsync not installed?");
 check_bin (\$gzip, "gzip not installed?");
 
-if ($opt_snap) {
+if ($OPT{snap}) {
     check_bin (\$lvcreate, "lvm2 not installed?");
     check_bin (\$lvs, "lvm2 not installed?");
     check_bin (\$lvremove, "lvm2 not installed?");
 }
 
-if ($opt_noarch) {
+if ($OPT{noarch}) {
     check_bin (\$ducmd, "du not installed?");
 } else {
     check_bin (\$cstream, "cstream not installed?");
@@ -1578,21 +1578,20 @@ if ($opt_noarch) {
 my $def = read_vzdump_defaults();
 
 $plugs = load_plugins($def);
-run_plugins($plugs,'debug',"Hallo Welt");
 
 my $tmpdir = "/var/tmp";
 $tmpdir = $def->{tmpdir} if defined ($def->{tmpdir});
-$tmpdir = $opt_tmpdir if defined ($opt_tmpdir);
+$tmpdir = $OPT{tmpdir} if defined ($OPT{tmpdir});
 $tmpdir .= "/vzdumptmp$$";
 
 # parameters are OK - no start real work and log everything
 
-if ($opt_restore) {
+if ($OPT{restore}) {
 
-    my $vpsid = $opt_vpsids[0];
+    my $vpsid = $OPT{vpsids}[0];
 
     # try to detect type first
-    my $firstfile = firstfile( $opt_restore );
+    my $firstfile = firstfile( $OPT{restore} );
 
     my $vzconffile = "$vzdir/conf/${vpsid}.conf";
     my $qmconffile = "$qmdir/${vpsid}.conf";
@@ -1602,9 +1601,9 @@ if ($opt_restore) {
     }
 
     if ($firstfile eq 'qemu-server.conf') {
-	restore_qemu ($opt_restore, $vpsid);
+	restore_qemu ($OPT{restore}, $vpsid);
     } else {
-	restore_openvz ($opt_restore, $vpsid, $tmpdir);
+	restore_openvz ($OPT{restore}, $vpsid, $tmpdir);
     }
 
     exit 0;
@@ -1616,7 +1615,7 @@ $SIG{INT} = $SIG{TERM} = $SIG{QUIT} = $SIG{HUP} = sub {
 
 debugmsg ('info', "Starting new backup job - $cmdline", undef, 1);
 
-my $maxwait = defined ($opt_lockwait) ? $opt_lockwait : $def->{lockwait};
+my $maxwait = defined ($OPT{lockwait}) ? $OPT{lockwait} : $def->{lockwait};
 
 getlock($maxwait); # only one process allowed
 
@@ -1628,17 +1627,17 @@ eval {
 
     my $vmlist = {};
 
-    $opt_bwlimit = $def->{bwlimit} if !$opt_bwlimit;
-    $opt_snapsize = $def->{size} if !$opt_snapsize;
-    $opt_stopwait = $def->{stopwait} if !$opt_stopwait;
+    $OPT{bwlimit} = $def->{bwlimit} if !$OPT{bwlimit};
+    $OPT{snapsize} = $def->{size} if !$OPT{snapsize};
+    $OPT{stopwait} = $def->{stopwait} if !$OPT{stopwait};
 
     $stopmode = $def->{mode} if ($def->{mode});
-    $stopmode = 'stop' if $opt_stop;
-    $stopmode = 'suspend' if $opt_suspend;
-    $stopmode = 'snapshot' if $opt_snap;
+    $stopmode = 'stop' if $OPT{stop};
+    $stopmode = 'suspend' if $OPT{suspend};
+    $stopmode = 'snapshot' if $OPT{snap};
 
     # stop is sane by definition!
-    $opt_sane = 0 if ($stopmode eq 'stop');
+    $OPT{sane} = 0 if ($stopmode eq 'stop');
 
 
     my $dumpdir;
@@ -1654,7 +1653,7 @@ eval {
     }
 
     $dumpdir = $def->{dumpdir} if defined ($def->{dumpdir});
-    $dumpdir = $opt_dumpdir if defined ($opt_dumpdir);
+    $dumpdir = $OPT{dumpdir} if defined ($OPT{dumpdir});
 
     if (!$dumpdir) {
 	die "no dumpdir specified - use option '--dumpdir'\n";
@@ -1662,15 +1661,15 @@ eval {
 	die "dumpdir '$dumpdir' does not exist\n";
     }
 
-    @opt_vpsids = keys %$vmlist if $opt_all;
+    $OPT{vpsids} = [ keys %$vmlist ] if $OPT{all};
 
     my $status = {};
 
     my $abort = 0;
 
-    foreach my $vpsid (sort @opt_vpsids) {
+    foreach my $vpsid (sort @{$OPT{vpsids}}) {
 
-	next if grep { $_ eq  $vpsid } @$opt_exclude;
+	next if grep { $_ eq  $vpsid } @{$OPT{exclude}};
 
 	my $res = { size => 0 };
 	$res->{hostname} = $vmlist->{$vpsid}->{hostname};
@@ -1700,7 +1699,7 @@ eval {
 	    srcconf  => $vmlist->{$vpsid}->{conffile},   # VM configuraion file
 	};
 
-	$bckpar->{tarfile} = $res->{tarfile} = "$dumpdir/$basename". ($opt_compress ? '.tgz' : '.tar');
+	$bckpar->{tarfile} = $res->{tarfile} = "$dumpdir/$basename". ($OPT{compress} ? '.tgz' : '.tar');
 
 	eval {
 	    exists ($vmlist->{$vpsid}) ||
@@ -1747,9 +1746,9 @@ eval {
 
     my $totaltime = time() - $starttime;
 
-    if ($opt_mailto) {
+    if ($OPT{mailto}) {
 	eval {
-	    send_mail ($opt_mailto, $status, $cmdline, $totaltime);
+	    send_mail ($OPT{mailto}, $status, $cmdline, $totaltime);
 	};
 
 	debugmsg ('err', $@) if $@;

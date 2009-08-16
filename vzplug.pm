@@ -1,4 +1,4 @@
-#    Joint Copyright (C) 2007-2009 
+#    Joint Copyright (C) 2007-2009
 #         Proxmox Server Solutions GmbH
 #         Dr. Lars Hanke (µAC - Microsystem Accessory Consult)
 #
@@ -19,7 +19,7 @@
 #    MA 02110-1301, USA.
 #
 #    Author: Lars Hanke <lars@lhanke.de>
-#            
+#
 #
 
 #
@@ -65,7 +65,7 @@ sub run_command {
 }
 
 sub new {
-    my ($class,$name,$opts) = @_;
+    my ($class,$name,$opts,$vzdump_opts) = @_;
     my $self = {};
     while (my ($k, $v) = each (%$opts)){
 	$self->{$k} = $v;
@@ -92,7 +92,7 @@ sub debug {
 	$v = '(undef)' if(!defined($v));
 	$self->debugmsg('info', $self->{id} ."->$k:\t$v");
     }
-    
+
     return 1;
 }
 

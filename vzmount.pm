@@ -1,4 +1,4 @@
-#    Joint Copyright (C) 2007-2009 
+#    Joint Copyright (C) 2007-2009
 #         Proxmox Server Solutions GmbH
 #         Dr. Lars Hanke (µAC - Microsystem Accessory Consult)
 #
@@ -19,7 +19,7 @@
 #    MA 02110-1301, USA.
 #
 #    Author: Lars Hanke <lars@lhanke.de>
-#            
+#
 #
 
 #
@@ -39,9 +39,14 @@ BEGIN {
 }
 
 sub new {
-    my $class = shift;
-    my $self = vzplug->new(@_);
+    my ($class,$name,$opts,$vzdump_opts) = @_;
+    my $self = vzplug->new($name,$opts,$vzdump_opts);
+
     $self->{mounts} = ();
+    $self->{archive} = ( !defined($vzdump_opts->{'noarch'}) ||
+			 0 == $vzdump_opts->{'noarch'} )? 1 : 0;
+    $self->{lvm}     = ( defined($vzdump_opts->{'lvm'}) &&
+			 0 != $vzdump_opts->{'lvm'} )? 1 : 0;
 
     return bless($self, $class);
 }
@@ -128,7 +133,7 @@ sub prepare {
 	$mount->{dev} = $res[0];
 	$mount->{fs}  = $res[1];
 	$mount->{dir} = $res[6];
-	
+
 	my $path = File::Spec->canonpath($mount->{backup});
 	$path = File::Spec->rel2abs($path);
 	if( $path ne $mount->{dir} ){
@@ -138,17 +143,17 @@ sub prepare {
 	push @{$self->{mounts}}, $mount;
     }
     close MN;
-    
+
     return 1 if( !defined($self->{mounts}) || 0 == scalar @{$self->{mounts}});
 
     my $mapping = main::get_lvm_mapping();
 
     foreach my $mount (@{$self->{mounts}}){
-	($mount->{vg}, $mount->{lv}) = 
+	($mount->{vg}, $mount->{lv}) =
 	    @{$mapping->{$mount->{dev}}} if defined $mapping->{$mount->{dev}};
     }
 
-    
+
     return 1;
 }
 
