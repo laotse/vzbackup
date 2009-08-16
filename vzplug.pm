@@ -34,6 +34,7 @@ BEGIN {
     our @ISA = qw( Exporter );
     our %EXPORT_TAGS = ('all' => [ qw ( &new &id
                                         &prepare &snapshot &frozen &assemble
+					&cleanup &cleanup_all
                                         )]);
     our @EXPORT_OK = ( @{$EXPORT_TAGS{'all'}});
     our @EXPORT = qw();
@@ -64,6 +65,10 @@ sub run_command {
     return main::run_command @_;
 }
 
+#
+# Class maintenance
+#
+
 sub new {
     my ($class,$name,$opts,$vzdump_opts) = @_;
     my $self = {};
@@ -75,10 +80,21 @@ sub new {
     return bless($self, $class);
 }
 
+sub DESTROY {
+    my $self = shift;
+
+    $self->cleanup_all;
+}
+
 sub id {
     my ($self) = @_;
     $self->debugmsg('info',"Template plugin loaded successfully as $self->{id}!");
     return $self->{id};
+}
+
+sub cleanup_all {
+    # override me
+    return 0;
 }
 
 #
@@ -116,6 +132,12 @@ sub frozen {
 
 # Phase 6
 sub assemble {
+    my ($self, $logfd, $bckpar) = @_;
+    return 1;
+}
+
+# Cleanup per VEID
+sub cleanup {
     my ($self, $logfd, $bckpar) = @_;
     return 1;
 }

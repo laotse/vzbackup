@@ -111,7 +111,9 @@ sub safe_mkpath {
     my $path = shift;
     $path = File::Spec->canonpath($path);
     $path = File::Spec->rel2abs($path);
-    @safe_paths = (@safe_paths, mkpath( $path ));
+    my @npaths = mkpath( $path );
+    @safe_paths = (@safe_paths, @npaths );
+    return @npaths;
 }
 
 sub safe_rmtree {
@@ -123,7 +125,7 @@ sub safe_rmtree {
 	if( $path =~ /^$p/ ){
 	    rmtree( $path );
 	    if( $path eq $p ){
-		slice(@safe_paths,$i,1);
+		splice(@safe_paths,$i,1);
 		return;
 	    }
 	}
@@ -1007,7 +1009,10 @@ sub vm_backup {
 
     unlink $bckpar->{tmptar} if ( exists $bckpar->{tmptar} );
 
+    my $res = run_plugins($plugs,'cleanup',$logfd,$bckpar);
+
     die $err if $err; # propagate error
+    die "Plugin failure in $res->cleanup()" if(defined($res));
 
     return $size;
 }
@@ -1448,17 +1453,19 @@ sub load_plugins {
 }
 
 sub run_plugins {
-    my ($plugs, $meth, @args) = @_;
+    my ($plugs, $meth, $logfd, @args) = @_;
 
     foreach my $p (@$plugs){
 	my $res = 0;
 	my $par = dclone(\@args);
 	eval {
-	    $res = $p->$meth(@$par);
+	    $res = $p->$meth($logfd, @$par);
 	};
 	my $err = $@;
-	if(($res == 0) || ($err)){
-	    return $p->{name};
+	if( !defined($res) || ($res == 0) || ($err)){
+	    $res = $p->id();
+	    $res .= ": $err" if($err);
+	    return $res;
 	}
     }
     return;
