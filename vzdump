@@ -899,7 +899,13 @@ sub vm_backup {
 	    $bckpar->{dump_checkpoint} = 1 if($bckpar->{stopmode} eq 'suspend');
 	}
 	# we will copy from dir - [snapdir] - dumpdir
-	$bckpar->{snapdir} = ($OPT{noarch})? $bckpar->{dumpdir} : $bckpar->{tmpdir};
+	if( $OPT{noarch} ){
+	    $bckpar->{snapdir} = $bckpar->{dumpdir};
+	} else {
+	    $bckpar->{snapdir} = $bckpar->{tmpdir};
+	    safe_mkpath $bckpar->{snapdir};
+	}
+
 	# since we do rsync /my/src/path /my/dst, the base will be /my/dst/path!
 	my $subdir = $bckpar->{dir};
 	$subdir =~ s+^.*/+/+;

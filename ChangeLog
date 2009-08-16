@@ -1,3 +1,149 @@
+2009-08-16 Dr. Lars Hanke <lars@lhanke.de>
+
+	Fixed stale tmpdir bug
+
+	If snapdir is temporary it is now explicitly created by safe_mkpath,
+	instead by implicit creation through rsync
+
+2009-08-16 Dr. Lars Hanke <lars@lhanke.de>
+
+	vzmount primary alpha version
+
+	This version passed the first elementary tests
+	Setup: OpenVZ VE with a single mount
+	* creates tar archive
+	* creates directory
+	* tested with and without LVM
+
+	Issues:
+	* no restore yet
+	* if the VE is not running, the mounts are not backed. This in some
+	  sense is a feature, since prepare() determines the devices from what
+	  is actually mounted. Fixing will require more sophisticated parsing
+	  of the mount commands and consulting the fstab.
+	* creating archives w/o LVM does not remove the vzdumptmp directory,
+	  which is a problem of vzdump creating this path by-passing
+	  safe_mkpath
+
+2009-08-16 Dr. Lars Hanke <lars@lhanke.de>
+
+	Added cleanup hooks to plugin interface
+
+	vzplug.pm:
+	* cleanup() is a per VEID clean-up
+	* cleanup_all() is a complete cleanup, which is automatically called
+	  from the instance destructor
+
+	vzdump:
+	* safe_mkpath now returns the original array returned by mkpath
+	* added invocation of cleanup() hook to the cleanup phase
+	* added logfd parameter to run_plugins()
+	* catch programming errors of plugins, i.e. undefined returns, and
+	  report die causes
+	* corrected typo in safe_rmtree(), which showed up in the tests
+
+2009-08-16 Dr. Lars Hanke <lars@lhanke.de>
+
+	Moved CLI options into a hash to pass a copy to plugins
+
+	vzdump
+	* moved $opt_* to $OPT{*} hash entries, most of it automatically by
+	  sed -i 's/\([\$\{@]\)opt_\(\w\w*\)/\1OPT{\2}/g' vzdump
+	* corrected the @opt_* variables manually
+	* added my %OPT; at the beginning and commented non-assigning my
+	  $OPT{*}; removed the my in assigning cases
+	* load_plugins() copies the $OPT hash and passes the reference to the
+	  copy as another parameter
+	* restore_qemu() and restore_openvz() took $opt_restore as a scoped
+	  parameter. renamed this parameter to $src to avoid confusion with
+	  global variables
+	* removed debug call to plugins
+
+	vzplug.pm
+	* whitespace corrections
+	* corrected template for new() for completeness, vzplug currently
+          ignores vzdump options
+
+	vzmount.pm
+	* whitespace corrections
+	* made plugin options and vzdump options available to new()
+	* copy --no-archive and --lvm option into the vzmount properties
+
+2009-08-16 Dr. Lars Hanke <lars@lhanke.de>
+
+	Added plugin capability
+
+	New default $def->{plugpath} configured by pluginpath entry in the
+	configuration.
+	vzdump plugins are expected in this directory and no-where else.
+	plugpath defaults to the current directory
+
+	Added --plugin command line option, which may be used multiple times.
+	The parameter syntax is:
+	plugstring = name | name:optstring
+	optstring  = opt  | opt,optstring
+	opt        = name | name=text
+
+	Have plugin hooks in the main process flow:
+	Phase 1: plugin->prepare()
+	Phase 2: plugin->snapshot()
+	Phase 4: plugin->frozen()
+	Phase 6: plugin->assemble()
+
+	vzplug.pm serves as the root class for all plugins and defines all
+	these functions to return 1
+	It furthermore makes all options passes keys of itself and exports
+	the API functions
+	Finally, it imports some handy functions from package main
+	All plugins shall inherit from vzplug.pm, I'll probably implement
+	this class check into check_module()!
+
+	vzmount.pm is a sample plugin to backup OpenVZ container mounts.
+
+	Some helpers:
+	* check_perm - checks whether the $file is owned by the owner of the
+	  script or root, and has at most the permissions given by $perm
+	* check_module - loads the plugin and dies, if anything is wrong with
+	  it, e.g. it fails or it was fetched from the wrong directory, wrong
+	  permissions, etc.
+	* load_plugins - parses the plugin options for each plugin command
+	  line parameter string and attempts to load the plugin
+	  it returns an array ref, holding all plugin objects loaded
+	* run_plugins - recurs through all plugin objects referenced by
+	  $plugs and calls the method $meth with $par
+
+2009-08-12 Dr. Lars Hanke <lars@lhanke.de>
+
+	Resorted subroutines
+
+	The only change is resorting subroutines and trying to put them under
+	headings, which are easy to recognize while browsing through the code.
+	The entire code change is moving down of findexcl code in global scope:
+
+	my @findexcl;
+	find_add_exclude ('-type', 's'); # skip sockets
+
+	The following analysis shows that the order is still sane:
+
+	#~: egrep '(findexcl|find_add)' vzdump
+	my @findexcl;
+	sub find_add_exclude {
+	        push @findexcl, "'('", '-not', '-type', 'd', '-regex' , "'$value'", "')'", '-o';
+	        push @findexcl, "'('", $excltype , "'$value'", '-prune', "')'", '-o';
+	find_add_exclude ('-type', 's'); # skip sockets
+	        find_add_exclude ('-files', '/var/log/.+');
+	        find_add_exclude ('-regex', '/tmp/.+');
+	        find_add_exclude ('-regex', '/var/tmp/.+');
+	        find_add_exclude ('-regex', '/var/run/.+pid');
+	    my $findargs = join (' ', @findexcl) . ' -print0';
+	        find_add_exclude ('-regex', $path);
+
+2009-08-10 Dr. Lars Hanke <lars@lhanke.de>
+
+	Updated ChangeLog
+
+	git log --pretty=format:"%ai %aN <%ae>%n%n%s%n%n%b" | sed '/^[0-9]\{4\}-/{s/ [0-9]\{2\}\(:[0-9]\{2\}\)\{2\} [+\-][0-9]\{4\}//;n};s/^\(.*\)$/\t\1/;s/[[:space:]]*$//' is a good friend.
+
 2009-08-10 Dr. Lars Hanke <lars@lhanke.de>
 
 	Fixed locale to C and removed German pattern
@@ -32,9 +178,9 @@
 
 	Added --lvm option
 
-	It is useful to have LVM2 snapshots at hand, even if we decide to stop 
+	It is useful to have LVM2 snapshots at hand, even if we decide to stop
 	the machine in order to have a clean filesystem.
-	--lvm makes this feature independent from the stopmode; actual code 
+	--lvm makes this feature independent from the stopmode; actual code
 	change is a single line in backup_vm()
 
 	Furthermore, some reordering in the help texts in print_usage()
@@ -43,20 +189,20 @@
 
 	Patch to mitigate rmtree risks
 
-	Since vzdump runs as root some regex gone awry could yield a 
+	Since vzdump runs as root some regex gone awry could yield a
 	parameter to rmtree, which can wreck your system
 
-	* safe_mkpath fills @safe_paths with the paths actually created by 
+	* safe_mkpath fills @safe_paths with the paths actually created by
 	  vzdump
 	* safe_rmtree removes only trees, which are subtrees of @safe_paths
-	  if existing directories, which are not on @safe_paths shall be 
+	  if existing directories, which are not on @safe_paths shall be
 	  removed, a warning is logged
-	* at the end of execution @safe_paths holds paths created, but not 
-	  removed 
+	* at the end of execution @safe_paths holds paths created, but not
+	  removed
 	  these exist, for sure, but could also help in consistence checks
 
 	NOTE:
-	The safe_ versions currently take only one path instead of a list and 
+	The safe_ versions currently take only one path instead of a list and
 	do not process options. Since there are
 
 2009-08-09 Dr. Lars Hanke <lars@lhanke.de>
@@ -81,45 +227,45 @@
 	This commit is tested in the sandbox, ie. LVM stuff is untested.
 	* Added "use warnings;" for bug hunting
 	* put cstream under check_bin() control
-	* Moved all session variables into $bckpar hash, which is passed by 
+	* Moved all session variables into $bckpar hash, which is passed by
 	  reference to all subs
 	  subs will add their information to this hash, too
 	  $bckpar is valid for only one VEID and shall be recreated afterwards
-	  The goal is that all variables except $bckpar and $opt_* are local 
+	  The goal is that all variables except $bckpar and $opt_* are local
 	  to each sub
 
-	* dissolved snapshot_vm() and archive_vm() into smaller pieces; these 
+	* dissolved snapshot_vm() and archive_vm() into smaller pieces; these
 	  main functions are gone
-	* established a central flow-control into vm_backup() using 8 disjoint 
+	* established a central flow-control into vm_backup() using 8 disjoint
 	  phases
 
-	* vm_status() gets the {status} string and sets the {running} flag 
+	* vm_status() gets the {status} string and sets the {running} flag
 	  (from snapshot_vm())
-	* determine_lvm() sets {snapdev}, if LVM snapshot is possible or 
+	* determine_lvm() sets {snapdev}, if LVM snapshot is possible or
 	  reduces {stopmode} to 'suspend', otherwise
 	  This may change, since I intend to offer LVM snapshotting independent
 	  from the stopmode - but that's for later times
-	  All lvm related parameters are only available, if determine_lvm() 
+	  All lvm related parameters are only available, if determine_lvm()
 	  returned true
 	* lvmsnapshot() creates the snapshot device, but does not mount it
-	* mount_snapshot() mounts the latter and returns the directory, where 
+	* mount_snapshot() mounts the latter and returns the directory, where
 	  it is finally hung
-	* create_archive() creates a tar archive according to the cli options 
+	* create_archive() creates a tar archive according to the cli options
 	  from $src -> $archive
-	* rsync_vm() performs all the rsync tasks (first snapshot, final copy, 
+	* rsync_vm() performs all the rsync tasks (first snapshot, final copy,
 	  archiving from snapdev to directory)
 	* freeze_vm() stops or suspends the machine according to stopmode
 	* resume_vm() resumes following a freeze_vm()
-	* dump_checkpoint() writes the VE state to a file. I don't know, if a 
+	* dump_checkpoint() writes the VE state to a file. I don't know, if a
 	  similar operation is available for qemu deployments
-	* flush_ctrl() {ctrldir} is a temporary directory used if no other 
+	* flush_ctrl() {ctrldir} is a temporary directory used if no other
 	  directory is available at the time;
-	  flush_ctrl() copies these files to their final destination and 
+	  flush_ctrl() copies these files to their final destination and
 	  removes this directory
-	  Currently this only applies the VE state file in case of a LVM 
-	  snapshot; its destination directory just does not exist or will 
+	  Currently this only applies the VE state file in case of a LVM
+	  snapshot; its destination directory just does not exist or will
 	  be overwritten whenthe fiel is produced
-	* copy_conf() copy the configuration files of the node into 
+	* copy_conf() copy the configuration files of the node into
 	  $dest = /etc/vzdump of the image
 
 	TODO:
@@ -138,30 +284,30 @@
 	Corrected some typos.
 	Note that all of the recent changes are weakly tested inside
 	a kvm sandbox with a single non LVM filesystem.
-	
+
 2009-07-27  Lars Hanke <lars@lhanke.de>
 
-	* vzdump: added options --sane and --no-archive. 
-	--sane enforces at least a --suspend of the VM even if --snapshot 
-	has been selected. The internal state of the suspended machine is 
-	save to /etc/vzdump of the dump. No changes in --stop mode, since 
-	this is always sane. If --compress is selected, the VM state is 
+	* vzdump: added options --sane and --no-archive.
+	--sane enforces at least a --suspend of the VM even if --snapshot
+	has been selected. The internal state of the suspended machine is
+	save to /etc/vzdump of the dump. No changes in --stop mode, since
+	this is always sane. If --compress is selected, the VM state is
 	compressed.
 	--no-archive puts the resulting dump into a directory of plain files
 	into --dumpdir/$VEID instead of creating a tar archive.
-	
+
 2009-05-29  Proxmox Support Team  <support@proxmox.com>
 
 	* vzdump (get_lvm_device): also return filesystem type
 	(snapshot_vm): always mount with '-t $fstype', pass "-o nouuid"
 	for xfs filesystems.
-	(get_lvm_mapping): use ':' as separator 
+	(get_lvm_mapping): use ':' as separator
 
 2008-09-17  Proxmox Support Team  <support@proxmox.com>
 
 	* vzdump (snapshot_vm): use --no-whole-file --inplace for rsync (works
 	better for large files), also use --stats --numeric-id and
-	apply bandwidth limits with --bwlimit 
+	apply bandwidth limits with --bwlimit
 	(archive_vm): use --sparse option for tar
 
 	* vzdump: support to backup/restore qemu-server images
@@ -171,16 +317,16 @@
 	all files and logs)
 
 	* vzdump: add --tmpdir option as suggested by Ugo Bellavance
-	
+
 	* vzdump: add --wait option, using locbal lock file to
 	make sure only one instance is running
-	
+
 	* vzdump: set default snapshot size to 1GB, new --size option to
 	specify snapshot size
 
 	* copyright: fixed fsf address
 
-	* Makefile (SBINDIR): set to /usr/sbin (command is only useful for 
+	* Makefile (SBINDIR): set to /usr/sbin (command is only useful for
 	user root)
 
 	* vzdump.spec, control.in: we now depend on rsync, cstream and MTA
@@ -193,7 +339,7 @@
 
 	* vzdump: added --node option (proxmox ve cluster support),
 	use --rsyncable for compressed files
-	removed --xdelta option 
+	removed --xdelta option
 
 2007-06-28  Proxmox Support Team  <support@proxmox.com>
 
@@ -235,7 +381,7 @@
 2007-03-22  Proxmox Support Team  <support@proxmox.com>
 
 	* vzdump.spec.in: new file from Kir Kolyshkin
-	
+
 	* Makefile: merged in patch from Kir Kolyshkin
 	- use rpmbuild instead of alien
 	- removed install-deb and install-rpm target
@@ -253,9 +399,9 @@
 
 2007-03-20  Proxmox Support Team  <support@proxmox.com>
 
-	* Makefile: fix TGZ package 
+	* Makefile: fix TGZ package
 
 2007-03-07  Proxmox Support Team  <support@proxmox.com>
 
-	* Makefile: first try 
+	* Makefile: first try
 
