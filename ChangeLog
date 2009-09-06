@@ -1,3 +1,7 @@
+2009-09-06 Dr. Lars Hanke <lars@lhanke.de>
+
+	Fixed false warnings in vzmount.pm
+
 2009-08-16 Dr. Lars Hanke <lars@lhanke.de>
 
 	Fixed stale tmpdir bug

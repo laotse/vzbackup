@@ -170,6 +170,7 @@ sub mount_partition {
 sub unmount {
     my ($self, $logfd) = @_;
 
+    return "" if( ! -d $self->{mpoint});
     eval {
 	$self->run_command ($logfd, "umount $self->{mpoint}");
     };
@@ -387,7 +388,7 @@ sub assemble {
 	}
 	if( $mount->{snapdev} ){
 	    my $err = $self->unmount($logfd);
-	    $self->debugmsg('warn',"Cannot unmount $mount->{snapdev}: $err",$logfd);
+	    $self->debugmsg('warn',"Cannot unmount $mount->{snapdev}: $err",$logfd) if($err);
 	    $self->lvm_remove($mount,$logfd);
 	}
     }
