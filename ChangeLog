@@ -1,3 +1,23 @@
+2009-09-07 Dr. Lars Hanke <lars@lhanke.de>
+
+        Added fix-mtab option to vzmount.pm
+
+	OpenVZ has a bug when bringing down VE with external mounts. These
+	leave stale entries in /etc/mtab, which can be resolved by issuing
+	umount in the node's context. umount fails, but tidies /etc/mtab.
+
+	If vzmount is given the option fix-mtab it does exactly this. For
+	each VE mount it is checked whether it is still listed in the
+	/etc/mtab (by directory and device). If it is listed in the mtab
+	and the directory has been removed, then it will unmount the
+	directory.
+
+	Further changes:
+	* pattern for plug-in options changed in vzdump to accept hyphen
+	  and underscore
+	* vzmount parses the options by itself. I'll probably remove the
+	  automatics in vzplug.pm entirely due to security considerations.
+
 2009-09-06 Dr. Lars Hanke <lars@lhanke.de>
 
 	Fixed false warnings in vzmount.pm

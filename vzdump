@@ -1436,7 +1436,7 @@ sub load_plugins {
 	my @topt = (defined($3))? split(/\s*,\s*/,$3) : ();
 	my %popt;
 	foreach my $o (@topt){
-	    if( ! ($o =~ /^(\w+)\s*(=\s*(.*\S)\s*)?$/)){
+	    if( ! ($o =~ /^([\w_\-]+)\s*(=\s*(.*\S)\s*)?$/)){
 		die "Invalid option for plugin: $name";
 	    }
 	    my $on = $1;

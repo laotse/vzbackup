@@ -46,7 +46,7 @@ BEGIN {
 
 sub new {
     my ($class,$name,$opts,$vzdump_opts) = @_;
-    my $self = vzplug->new($name,$opts,$vzdump_opts);
+    my $self = vzplug->new($name,{},$vzdump_opts);
 
     $self->{mounts}   = [];
     $self->{tmpdirs}  = [];
@@ -61,6 +61,7 @@ sub new {
     $self->{compress} = $vzdump_opts->{compress} unless( defined( $self->{compress} ));
     $self->{snapsize} = $vzdump_opts->{snapsize} unless( defined( $self->{snapsize} ));
     $self->{snapsize} = 1024 unless( defined( $self->{snapsize} ));
+    $self->{mtab} = ( exists $opts->{'fix-mtab'} )? 1 : 0;
 
     die "Mount point for vzmount '$self->{mpoint}' is blocked.\n"
 	if( -e $self->{mpoint} );
@@ -329,6 +330,37 @@ sub frozen {
     my ($self, $logfd, $bckpar) = @_;
 
     return 1 if( !defined($self->{mounts}) || 0 == scalar @{$self->{mounts}});
+
+    if( $self->{mtab} ){
+	my %mtab;
+	if( ! open(MT,"/etc/mtab") ){
+	    $self->debugmsg('warn',"Cannot open /etc/mtab -- won't fix it!");
+	} else {
+	    while(<MT>){
+		chomp;
+		my @fields = split(/\s+/,$_);
+		if(scalar @fields != 6){
+		    $self->debugmsg('warn',"Cannot parse mtab: $_");
+		    next;
+		}
+		$mtab{$fields[1]} = $fields[0];
+	    }
+	    close MT;
+	}
+	foreach my $mount (@{$self->{mounts}}){
+	    next if( ! defined( $mtab{$mount->{dir}} ));
+	    next if( $mtab{$mount->{dir}} ne $mount->{dev} );
+	    if( -d $mount->{dir} ){
+		$self->debugmsg('info',"$mount->{dir} still exists -- won't unmount!");
+		next;
+	    }
+	    $self->debugmsg('info',"Cleaning stale mtab entries for $mount->{dir}");
+	    eval {
+		$self->run_command ($logfd, "umount $mount->{dir}");
+	    };
+	    $self->debugmsg('info',"unmounting stale entry failed: $@") if($@);
+	}
+    }
 
     foreach my $mount (@{$self->{mounts}}){
 	if( defined($mount->{snapdev}) ){
